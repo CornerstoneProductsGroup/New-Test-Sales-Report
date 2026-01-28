@@ -1,5 +1,17 @@
 import os
 
+def _fmt_units(x):
+    try:
+        return f"{float(x):,.0f}"
+    except Exception:
+        return ""
+
+def _fmt_money(x):
+    try:
+        return f"${float(x):,.2f}"
+    except Exception:
+        return ""
+
 # Persistent storage file (NOTE: Streamlit Cloud may wipe local files on cold restart; use Backup/Restore tab).
 DB_FILE = os.path.join(os.path.dirname(__file__), 'app.db')
 
@@ -1916,19 +1928,11 @@ with tab_retailer_scorecard:
                 trend_show = trend.copy()
                 trend_show["Week"] = trend_show["week_start"].dt.strftime("%Y-%m-%d")
                 trend_show = trend_show[["Week","Units","Sales"]]
-                st.dataframe(
-                    trend_show,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Week": st.column_config.TextColumn(width="small"),
-                        "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                        "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-                    },
-                    height=300,
-                )
-
-                # --- Top SKUs ---
+                trend_disp = trend_show.copy()
+                trend_disp['Units'] = trend_disp['Units'].apply(_fmt_units)
+                trend_disp['Sales'] = trend_disp['Sales'].apply(_fmt_money)
+                st.dataframe(trend_disp, use_container_width=True, hide_index=True, height=300)
+# --- Top SKUs ---
                 st.markdown("### Top SKUs (YTD)")
                 sku_agg = (wk.groupby("sku", dropna=False, as_index=False)
                              .agg(Units=("Units","sum"), Sales=("Sales","sum"))
@@ -1940,51 +1944,28 @@ with tab_retailer_scorecard:
                 with left:
                     st.markdown("#### By Units")
                     by_units = sku_agg.sort_values("Units", ascending=False).head(25).rename(columns={"sku":"SKU"})
-                    st.dataframe(
-                        by_units[["SKU","Units","Sales"]],
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "SKU": st.column_config.TextColumn(width="small"),
-                            "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                            "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-                        },
-                        height=420,
-                    )
-                with right:
+                    disp = by_units[['SKU','Units','Sales']].copy()
+                    disp['Units'] = disp['Units'].apply(_fmt_units)
+                    disp['Sales'] = disp['Sales'].apply(_fmt_money)
+                    st.dataframe(disp, use_container_width=True, hide_index=True, height=420)
+with right:
                     st.markdown("#### By Sales")
                     by_sales = sku_agg.sort_values("Sales", ascending=False).head(25).rename(columns={"sku":"SKU"})
-                    st.dataframe(
-                        by_sales[["SKU","Sales","Units"]],
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "SKU": st.column_config.TextColumn(width="small"),
-                            "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                            "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-                        },
-                        height=420,
-                    )
-
-                # --- Vendor breakdown within retailer ---
+                    disp = by_sales[['SKU','Sales','Units']].copy()
+                    disp['Units'] = disp['Units'].apply(_fmt_units)
+                    disp['Sales'] = disp['Sales'].apply(_fmt_money)
+                    st.dataframe(disp, use_container_width=True, hide_index=True, height=420)
+# --- Vendor breakdown within retailer ---
                 st.markdown("### Vendor breakdown (YTD)")
                 v_agg = (wk.groupby("vendor", dropna=False, as_index=False)
                            .agg(Units=("Units","sum"), Sales=("Sales","sum"))
                            .fillna(0.0)
                            .sort_values("Sales", ascending=False)
                            .rename(columns={"vendor":"Vendor"}))
-                st.dataframe(
-                    v_agg,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Vendor": st.column_config.TextColumn(width="medium"),
-                        "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                        "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-                    },
-                    height=350,
-                )
-
+                v_disp = v_agg.copy()
+                if 'Units' in v_disp.columns: v_disp['Units'] = v_disp['Units'].apply(_fmt_units)
+                if 'Sales' in v_disp.columns: v_disp['Sales'] = v_disp['Sales'].apply(_fmt_money)
+                st.dataframe(v_disp, use_container_width=True, hide_index=True, height=350)
 with tab_vendor_scorecard:
     st.subheader("Vendor Scorecard")
     st.caption("Single-vendor view: YTD totals plus WoW and MoM deltas, with top SKUs and retailer breakdown.")
@@ -2064,64 +2045,34 @@ with tab_vendor_scorecard:
 
             st.markdown("### Weekly trend")
             trend = wk.groupby("week_start", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum")).sort_values("week_start")
-            st.dataframe(
-                trend.assign(week_start=trend["week_start"].dt.strftime("%Y-%m-%d")),
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "week_start": st.column_config.TextColumn("Week", width="small"),
-                    "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                    "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-                },
-                height=300,
-            )
-            st.line_chart(trend.set_index("week_start")[["Units","Sales"]])
-
-            st.markdown("### Top SKUs (YTD)")
+            trend_disp = trend.copy()
+            trend_disp['Week'] = trend_disp['week_start'].dt.strftime('%Y-%m-%d')
+            trend_disp = trend_disp[['Week','Units','Sales']]
+            trend_disp['Units'] = trend_disp['Units'].apply(_fmt_units)
+            trend_disp['Sales'] = trend_disp['Sales'].apply(_fmt_money)
+            st.dataframe(trend_disp, use_container_width=True, hide_index=True, height=300)
+st.markdown("### Top SKUs (YTD)")
             sku_agg = wk.groupby("sku", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum")).sort_values("Units", ascending=False)
             left, right = st.columns(2, gap="large")
             with left:
                 st.markdown("#### By Units")
-                st.dataframe(
-                    sku_agg[["sku","Units","Sales"]].head(25).rename(columns={"sku":"SKU"}),
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "SKU": st.column_config.TextColumn(width="small"),
-                        "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                        "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-                    },
-                    height=420,
-                )
-            with right:
+                disp = sku_agg[['sku','Units','Sales']].head(25).rename(columns={'sku':'SKU'}).copy()
+                disp['Units'] = disp['Units'].apply(_fmt_units)
+                disp['Sales'] = disp['Sales'].apply(_fmt_money)
+                st.dataframe(disp, use_container_width=True, hide_index=True, height=420)
+with right:
                 st.markdown("#### By Sales")
                 sku_sales = sku_agg.sort_values("Sales", ascending=False)
-                st.dataframe(
-                    sku_sales[["sku","Sales","Units"]].head(25).rename(columns={"sku":"SKU"}),
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "SKU": st.column_config.TextColumn(width="small"),
-                        "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                        "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-                    },
-                    height=420,
-                )
-
-            st.markdown("### Retailer breakdown (YTD)")
+                disp = sku_sales[['sku','Sales','Units']].head(25).rename(columns={'sku':'SKU'}).copy()
+                disp['Units'] = disp['Units'].apply(_fmt_units)
+                disp['Sales'] = disp['Sales'].apply(_fmt_money)
+                st.dataframe(disp, use_container_width=True, hide_index=True, height=420)
+st.markdown("### Retailer breakdown (YTD)")
             r_agg = wk.groupby("retailer", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum")).sort_values("Sales", ascending=False)
-            st.dataframe(
-                r_agg.rename(columns={"retailer":"Retailer"}),
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Retailer": st.column_config.TextColumn(width="medium"),
-                    "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                    "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-                },
-                height=350,
-            )
-
+            r_disp = r_agg.rename(columns={'retailer':'Retailer'}).copy()
+            if 'Units' in r_disp.columns: r_disp['Units'] = r_disp['Units'].apply(_fmt_units)
+            if 'Sales' in r_disp.columns: r_disp['Sales'] = r_disp['Sales'].apply(_fmt_money)
+            st.dataframe(r_disp, use_container_width=True, hide_index=True, height=350)
 with tab_vendor_totals:
     st.subheader("Vendor Totals")
     st.caption("Totals across ALL retailers for the selected weeks. Left = Units, Right = Sales ($).")
