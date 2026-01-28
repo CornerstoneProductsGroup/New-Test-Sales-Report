@@ -1818,141 +1818,172 @@ with tab_retailer_totals:
 
 with tab_retailer_scorecard:
     st.subheader("Retailer Scorecard")
-    st.caption("Single-retailer view: YTD totals plus WoW and MoM deltas, with top SKUs and trends.")
+    st.caption("Single-retailer view: YTD totals plus WoW and MoM deltas, with top SKUs and vendor breakdown.")
 
-    retailers = sorted(pd.read_sql_query('SELECT DISTINCT retailer FROM weekly_results', conn)['retailer'].dropna().unique().tolist()) if table_exists(conn, 'weekly_results') else []
-    if not retailers:
+    if not table_exists(conn, "weekly_results"):
         st.info("Upload a week workbook first so retailers appear here.")
     else:
-        r_sel = st.selectbox("Retailer", retailers, key="retailer_scorecard_sel")
+        rlist = pd.read_sql_query("SELECT DISTINCT retailer FROM weekly_results", conn)["retailer"]
+        retailers = sorted(rlist.dropna().astype(str).str.strip().unique().tolist())
 
-        wk = pd.read_sql_query(
-            "SELECT week_start, retailer, sku, units_auto, units_override FROM weekly_results WHERE retailer = ?",
-            conn,
-            params=[r_sel],
-        )
-        wk["week_start"] = pd.to_datetime(wk["week_start"], errors="coerce")
-        wk = filter_df_year(wk, year_filter, "week_start")
-        wk = wk.dropna(subset=["week_start"])
-
-        wk["Units"] = wk["units_override"].where(wk["units_override"].notna(), wk["units_auto"])
-        wk["Units"] = pd.to_numeric(wk["Units"], errors="coerce").fillna(0)
-        wk["sku"] = wk["sku"].astype(str).str.strip()
-
-        # Mapping for price + vendor (optional, but used for Sales + Vendor breakdown)
-        try:
-            m = pd.read_sql_query("SELECT retailer, vendor, sku, unit_price FROM sku_mapping", conn)
-            m["sku"] = m["sku"].astype(str).str.strip()
-            m["retailer"] = m["retailer"].astype(str).str.strip()
-            m["vendor"] = m["vendor"].astype(str).str.strip()
-        except Exception:
-            m = pd.DataFrame(columns=["retailer","vendor","sku","unit_price"])
-
-        if not m.empty:
-            wk = wk.merge(m[m["retailer"] == r_sel][["sku","vendor","unit_price"]], on="sku", how="left")
-            wk["unit_price"] = pd.to_numeric(wk["unit_price"], errors="coerce").fillna(0.0)
-            wk["Sales"] = wk["Units"] * wk["unit_price"]
-            wk["vendor"] = wk["vendor"].fillna("Unknown")
+        if not retailers:
+            st.info("Upload a week workbook first so retailers appear here.")
         else:
-            wk["Sales"] = 0.0
-            wk["vendor"] = "Unknown"
+            r_sel = st.selectbox("Retailer", retailers, key="retailer_scorecard_sel")
 
-        # --- KPIs ---
-        ytd_units = float(wk["Units"].sum())
-        ytd_sales = float(wk["Sales"].sum())
-
-        wk["week_str"] = wk["week_start"].dt.strftime("%Y-%m-%d")
-        weeks = sorted(wk["week_str"].unique().tolist())
-        if len(weeks) >= 2:
-            prev_w, last_w = weeks[-2], weeks[-1]
-            prev = wk[wk["week_str"] == prev_w][["Units","Sales"]].sum()
-            last = wk[wk["week_str"] == last_w][["Units","Sales"]].sum()
-            wow_units = float(last["Units"] - prev["Units"])
-            wow_sales = float(last["Sales"] - prev["Sales"])
-        else:
-            wow_units = 0.0
-            wow_sales = 0.0
-
-        if wk["week_start"].notna().any():
-            cur_month = wk["week_start"].max().to_period("M")
-            prev_month = cur_month - 1
-            m_cur = wk[wk["week_start"].dt.to_period("M") == cur_month][["Units","Sales"]].sum()
-            m_prev = wk[wk["week_start"].dt.to_period("M") == prev_month][["Units","Sales"]].sum()
-            mom_units = float(m_cur["Units"] - m_prev["Units"])
-            mom_sales = float(m_cur["Sales"] - m_prev["Sales"])
-        else:
-            mom_units = 0.0
-            mom_sales = 0.0
-
-        k1, k2, k3, k4 = st.columns(4, gap="small")
-        k1.metric("Units (YTD)", f"{ytd_units:,.0f}", f"{wow_units:+,.0f} WoW")
-        k2.metric("Sales (YTD)", f"${ytd_sales:,.2f}", f"${wow_sales:+,.2f} WoW")
-        k3.metric("Units (MoM)", f"{(ytd_units):,.0f}", f"{mom_units:+,.0f} MoM")
-        k4.metric("Sales (MoM)", f"${(ytd_sales):,.2f}", f"${mom_sales:+,.2f} MoM")
-
-        # --- Weekly trend ---
-        st.markdown("### Weekly trend")
-        trend = wk.groupby("week_start", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum")).sort_values("week_start")
-        st.dataframe(
-            trend.assign(week_start=trend["week_start"].dt.strftime("%Y-%m-%d")),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "week_start": st.column_config.TextColumn("Week", width="small"),
-                "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-            },
-            height=300,
-        )
-        st.line_chart(trend.set_index("week_start")[["Units","Sales"]])
-
-        # --- Top SKUs ---
-        st.markdown("### Top SKUs (YTD)")
-        sku_agg = wk.groupby("sku", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum")).sort_values("Units", ascending=False)
-        left, right = st.columns(2, gap="large")
-        with left:
-            st.markdown("#### By Units")
-            st.dataframe(
-                sku_agg[["sku","Units","Sales"]].head(25).rename(columns={"sku":"SKU"}),
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "SKU": st.column_config.TextColumn(width="small"),
-                    "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                    "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-                },
-                height=420,
+            wk = pd.read_sql_query(
+                "SELECT week_start, retailer, sku, units_auto, units_override FROM weekly_results WHERE retailer = ?",
+                conn,
+                params=[r_sel],
             )
-        with right:
-            st.markdown("#### By Sales")
-            sku_sales = sku_agg.sort_values("Sales", ascending=False)
-            st.dataframe(
-                sku_sales[["sku","Sales","Units"]].head(25).rename(columns={"sku":"SKU"}),
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "SKU": st.column_config.TextColumn(width="small"),
-                    "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                    "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-                },
-                height=420,
-            )
+            wk["week_start"] = pd.to_datetime(wk["week_start"], errors="coerce")
+            wk = filter_df_year(wk, year_filter, "week_start")
+            wk = wk.dropna(subset=["week_start"])
 
-        # --- Vendor breakdown within retailer ---
-        st.markdown("### Vendor breakdown (YTD)")
-        v_agg = wk.groupby("vendor", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum")).sort_values("Sales", ascending=False)
-        st.dataframe(
-            v_agg.rename(columns={"vendor":"Vendor"}),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Vendor": st.column_config.TextColumn(width="medium"),
-                "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
-                "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
-            },
-            height=350,
-        )
+            if wk.empty:
+                st.info("No data for this retailer in the selected year.")
+            else:
+                wk["retailer"] = wk["retailer"].astype(str).str.strip()
+                wk["sku"] = wk["sku"].astype(str).str.strip()
 
+                wk["Units"] = wk["units_override"].where(wk["units_override"].notna(), wk["units_auto"])
+                wk["Units"] = pd.to_numeric(wk["Units"], errors="coerce").fillna(0)
+
+                # Mapping for price + vendor (deduped to avoid row multiplication)
+                try:
+                    m = pd.read_sql_query("SELECT retailer, vendor, sku, unit_price FROM sku_mapping", conn)
+                    m["sku"] = m["sku"].astype(str).str.strip()
+                    m["retailer"] = m["retailer"].astype(str).str.strip()
+                    m["vendor"] = m["vendor"].astype(str).str.strip()
+                    m["unit_price"] = pd.to_numeric(m["unit_price"], errors="coerce")
+                except Exception:
+                    m = pd.DataFrame(columns=["retailer","vendor","sku","unit_price"])
+
+                if not m.empty:
+                    m_r = m[m["retailer"] == r_sel].copy()
+                    # Deduplicate by SKU (keep first non-null vendor/price)
+                    m_r = (m_r.sort_values(["sku"])
+                               .groupby("sku", as_index=False)
+                               .agg(vendor=("vendor","first"), unit_price=("unit_price","first")))
+                    wk = wk.merge(m_r, on="sku", how="left")
+                    wk["unit_price"] = pd.to_numeric(wk["unit_price"], errors="coerce").fillna(0.0)
+                    wk["vendor"] = wk["vendor"].fillna("Unknown")
+                    wk["Sales"] = wk["Units"] * wk["unit_price"]
+                else:
+                    wk["vendor"] = "Unknown"
+                    wk["Sales"] = 0.0
+
+                wk["Sales"] = pd.to_numeric(wk["Sales"], errors="coerce").fillna(0.0)
+
+                # --- KPIs ---
+                ytd_units = float(wk["Units"].sum())
+                ytd_sales = float(wk["Sales"].sum())
+
+                wk["week_str"] = wk["week_start"].dt.strftime("%Y-%m-%d")
+                weeks = sorted(wk["week_str"].dropna().unique().tolist())
+                if len(weeks) >= 2:
+                    prev_w, last_w = weeks[-2], weeks[-1]
+                    prev = wk[wk["week_str"] == prev_w][["Units","Sales"]].sum(numeric_only=True)
+                    last = wk[wk["week_str"] == last_w][["Units","Sales"]].sum(numeric_only=True)
+                    wow_units = float(last.get("Units", 0) - prev.get("Units", 0))
+                    wow_sales = float(last.get("Sales", 0) - prev.get("Sales", 0))
+                else:
+                    wow_units = 0.0
+                    wow_sales = 0.0
+
+                if wk["week_start"].notna().any():
+                    cur_month = wk["week_start"].max().to_period("M")
+                    prev_month = cur_month - 1
+                    m_cur = wk[wk["week_start"].dt.to_period("M") == cur_month][["Units","Sales"]].sum(numeric_only=True)
+                    m_prev = wk[wk["week_start"].dt.to_period("M") == prev_month][["Units","Sales"]].sum(numeric_only=True)
+                    mom_units = float(m_cur.get("Units", 0) - m_prev.get("Units", 0))
+                    mom_sales = float(m_cur.get("Sales", 0) - m_prev.get("Sales", 0))
+                else:
+                    mom_units = 0.0
+                    mom_sales = 0.0
+
+                k1, k2, k3, k4 = st.columns(4, gap="small")
+                k1.metric("Units (YTD)", f"{ytd_units:,.0f}", f"{wow_units:+,.0f} WoW")
+                k2.metric("Sales (YTD)", f"${ytd_sales:,.2f}", f"${wow_sales:+,.2f} WoW")
+                k3.metric("Units (MoM Δ)", f"{mom_units:,.0f}")
+                k4.metric("Sales (MoM Δ)", f"${mom_sales:,.2f}")
+
+                # --- Weekly trend table (no line chart) ---
+                st.markdown("### Weekly trend")
+                trend = (wk.groupby("week_start", as_index=False)
+                           .agg(Units=("Units","sum"), Sales=("Sales","sum"))
+                           .sort_values("week_start"))
+                trend_show = trend.copy()
+                trend_show["Week"] = trend_show["week_start"].dt.strftime("%Y-%m-%d")
+                trend_show = trend_show[["Week","Units","Sales"]]
+                st.dataframe(
+                    trend_show,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Week": st.column_config.TextColumn(width="small"),
+                        "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
+                        "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
+                    },
+                    height=300,
+                )
+
+                # --- Top SKUs ---
+                st.markdown("### Top SKUs (YTD)")
+                sku_agg = (wk.groupby("sku", dropna=False, as_index=False)
+                             .agg(Units=("Units","sum"), Sales=("Sales","sum"))
+                             .fillna(0.0))
+                sku_agg["Units"] = pd.to_numeric(sku_agg["Units"], errors="coerce").fillna(0)
+                sku_agg["Sales"] = pd.to_numeric(sku_agg["Sales"], errors="coerce").fillna(0.0)
+
+                left, right = st.columns(2, gap="large")
+                with left:
+                    st.markdown("#### By Units")
+                    by_units = sku_agg.sort_values("Units", ascending=False).head(25).rename(columns={"sku":"SKU"})
+                    st.dataframe(
+                        by_units[["SKU","Units","Sales"]],
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "SKU": st.column_config.TextColumn(width="small"),
+                            "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
+                            "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
+                        },
+                        height=420,
+                    )
+                with right:
+                    st.markdown("#### By Sales")
+                    by_sales = sku_agg.sort_values("Sales", ascending=False).head(25).rename(columns={"sku":"SKU"})
+                    st.dataframe(
+                        by_sales[["SKU","Sales","Units"]],
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "SKU": st.column_config.TextColumn(width="small"),
+                            "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
+                            "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
+                        },
+                        height=420,
+                    )
+
+                # --- Vendor breakdown within retailer ---
+                st.markdown("### Vendor breakdown (YTD)")
+                v_agg = (wk.groupby("vendor", dropna=False, as_index=False)
+                           .agg(Units=("Units","sum"), Sales=("Sales","sum"))
+                           .fillna(0.0)
+                           .sort_values("Sales", ascending=False)
+                           .rename(columns={"vendor":"Vendor"}))
+                st.dataframe(
+                    v_agg,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Vendor": st.column_config.TextColumn(width="medium"),
+                        "Units": st.column_config.NumberColumn(format=",.0f", width="small"),
+                        "Sales": st.column_config.NumberColumn(format="$,.2f", width="small"),
+                    },
+                    height=350,
+                )
 
 with tab_vendor_scorecard:
     st.subheader("Vendor Scorecard")
