@@ -637,6 +637,19 @@ with tab_retail_totals:
         st.dataframe(style_units_wide_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=_table_height(wide_units, max_height=4000), hide_index=True)
         st.download_button("Download units table (CSV)", wide_units.to_csv(index=False).encode("utf-8"), "retailer_units_by_week.csv", "text/csv")
 
+        st.markdown("---")
+        st.markdown("#### Year-to-date totals (all retailers combined)")
+        m = wow_mom_metrics(df)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("YTD Units", f"{int(round(m['ytd_units'])):,}", delta=f"{int(round(m['wow_units'])):,} WoW" if m['wow_units'] is not None else None)
+        with c2:
+            st.metric("YTD Sales", fmt_currency(m['ytd_sales']), delta=f"{fmt_currency(m['wow_sales'])} WoW" if m['wow_sales'] is not None else None)
+        with c3:
+            # Requested: MoM sales only (as a standalone number)
+            st.metric("MoM Sales Change", fmt_currency(m['mom_sales']) if m['mom_sales'] is not None else "$0.00")
+
+
 with tab_vendor_totals:
     st.markdown("### Vendor Totals (by week)")
 
@@ -896,19 +909,54 @@ with tab_unmapped:
 
 
 with tab_no_sales:
-    st.markdown("### No Sales SKUs (never sold yet)")
+    st.markdown("### No Sales SKUs")
     if df.empty:
-        st.info("Upload weekly sheets to identify SKUs with no sales yet.")
+        st.info("Upload weekly sheets to identify SKUs with no sales in a selected timeframe.")
     else:
-        sold = df.groupby(["Retailer","Vendor","SKU"], as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
-        no_sold = sold[(sold["Units"]<=0) & (sold["Sales"]<=0)].copy()
-        no_sold["Status"] = "No units or sales yet"
-        no_sold = no_sold[["Retailer","Vendor","SKU","Status"]].sort_values(["Retailer","Vendor","SKU"])
-        if no_sold.empty:
-            st.success("All mapped SKUs have sales/units recorded.")
+        lookback = st.selectbox("Show SKUs with no sales for the last...", options=[3,6,8,12], index=1, key="no_sales_lookback")
+        periods = _sorted_periods(df)
+        if not periods:
+            st.info("No dated weekly periods found yet.")
         else:
-            st.dataframe(no_sold, use_container_width=True, height=_table_height(no_sold), hide_index=True)
-            st.download_button("Download (CSV)", no_sold.to_csv(index=False).encode("utf-8"), "no_sales_skus.csv", "text/csv")
+            use_periods = periods[-min(len(periods), lookback):]
+            recent = df[df["StartDate"].dt.date.isin(use_periods)].copy()
+
+            # Start from ALL mapped retailer/vendor/SKU combos in the vendor map
+            mapped = vmap[["Retailer","Vendor","SKU"]].drop_duplicates().copy()
+
+            sold_recent = recent.groupby(["Retailer","Vendor","SKU"], as_index=False).agg(
+                Units=("Units","sum"),
+                Sales=("Sales","sum"),
+            )
+
+            merged = mapped.merge(sold_recent, on=["Retailer","Vendor","SKU"], how="left")
+            merged["Units"] = merged["Units"].fillna(0)
+            merged["Sales"] = merged["Sales"].fillna(0)
+
+            no_sold = merged[(merged["Units"] <= 0) & (merged["Sales"] <= 0)].copy()
+            no_sold["Status"] = f"No units or sales in last {lookback} weeks"
+
+            # Sort: Retailer/Vendor alpha, SKUs in vendor-map order per retailer
+            def _sku_rank(row):
+                r = row["Retailer"]
+                sku = row["SKU"]
+                order = sku_order_map.get(r, [])
+                try:
+                    return order.index(sku)
+                except ValueError:
+                    return 10**9
+
+            if not no_sold.empty:
+                no_sold["__sku_rank"] = no_sold.apply(_sku_rank, axis=1)
+                no_sold = no_sold.sort_values(["Retailer","Vendor","__sku_rank","SKU"]).drop(columns=["__sku_rank"])
+
+            no_sold = no_sold[["Retailer","Vendor","SKU","Status"]]
+
+            if no_sold.empty:
+                st.success(f"All mapped SKUs have sales/units in the last {lookback} weeks.")
+            else:
+                st.dataframe(no_sold, use_container_width=True, height=_table_height(no_sold, max_height=4000), hide_index=True)
+                st.download_button("Download (CSV)", no_sold.to_csv(index=False).encode("utf-8"), "no_sales_skus.csv", "text/csv")
 
 with tab_backup:
     st.markdown("### Backup / Restore")
