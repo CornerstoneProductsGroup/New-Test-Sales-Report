@@ -652,11 +652,17 @@ with tab_vendor_scorecard:
             vdf = df[df["Vendor"] == sel_vendor].copy()
 
             m = wow_mom_metrics(vdf)
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("YTD Units", f"{m['ytd_units']:,.0f}", f"{m['wow_units']:+,.0f}" if m["wow_units"] is not None else None)
-            c2.metric("YTD Sales", f"${m['ytd_sales']:,.2f}", f"${m['wow_sales']:+,.2f}" if m["wow_sales"] is not None else None)
-            c3.metric("MoM Units", "" if m["mom_units"] is None else f"{m['mom_units']:+,.0f}")
-            c4.metric("MoM Sales", "" if m["mom_sales"] is None else f"${m['mom_sales']:+,.2f}")
+
+            # KPIs: show YTD totals, and show WoW + MoM as their own small numbers underneath
+            k1, k2 = st.columns(2)
+            k1.metric("YTD Units", f"{m['ytd_units']:,.0f}")
+            k2.metric("YTD Sales", f"${m['ytd_sales']:,.2f}")
+
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("WoW Units", "" if m["wow_units"] is None else f"{m['wow_units']:+,.0f}")
+            s2.metric("WoW Sales", "" if m["wow_sales"] is None else f"${m['wow_sales']:+,.2f}")
+            s3.metric("MoM Units", "" if m["mom_units"] is None else f"{m['mom_units']:+,.0f}")
+            s4.metric("MoM Sales", "" if m["mom_sales"] is None else f"${m['mom_sales']:+,.2f}")
 
             st.markdown("#### Monthly totals")
             months_n = st.selectbox("Months to show", options=[3,6,12], index=1, key="vendor_score_months")
@@ -670,27 +676,38 @@ with tab_vendor_scorecard:
             sku_agg = vdf.groupby("SKU", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
             sku_agg["Sales"] = sku_agg["Sales"].fillna(0.0)
 
-            st.markdown("#### Top SKUs")
+            # Vendor-map SKU order for this vendor (preserve original map order; de-dupe SKUs)
+            vm_skus = vmap[vmap["Vendor"] == sel_vendor]["SKU"].tolist()
+            seen = set()
+            vm_skus = [s for s in vm_skus if not (s in seen or seen.add(s))]
+            vm_rank = {s: i for i, s in enumerate(vm_skus)}
+
+            def _vm_sort(df_in: pd.DataFrame) -> pd.DataFrame:
+                if df_in is None or df_in.empty:
+                    return df_in
+                out = df_in.copy()
+                out["_rank"] = out["SKU"].map(lambda s: vm_rank.get(s, 10**9))
+                out = out.sort_values(["_rank","SKU"], ascending=[True, True]).drop(columns=["_rank"])
+                return out
+
+            # Pick top/bottom sets by metric, then display in vendor-map SKU order
+            top_units = _vm_sort(sku_agg.sort_values("Units", ascending=False).head(10)[["SKU","Units"]])
+            top_sales = _vm_sort(sku_agg.sort_values("Sales", ascending=False).head(10)[["SKU","Sales"]])
+            bot_units = _vm_sort(sku_agg.sort_values("Units", ascending=True).head(10)[["SKU","Units"]])
+            bot_sales = _vm_sort(sku_agg.sort_values("Sales", ascending=True).head(10)[["SKU","Sales"]])
+
+            st.markdown("#### Top / Bottom SKUs")
             t1, t2 = st.columns(2)
             with t1:
-                st.markdown("**Top by Units**")
-                top_u = sku_agg.sort_values("Units", ascending=False).head(10)
-                st.dataframe(style_number_table(top_u), use_container_width=True, height=360)
+                st.markdown("**Top 10 by Units**")
+                st.dataframe(style_number_table(top_units), use_container_width=True, height=340, hide_index=True)
+                st.markdown("**Bottom 10 by Units**")
+                st.dataframe(style_number_table(bot_units), use_container_width=True, height=340, hide_index=True)
             with t2:
-                st.markdown("**Top by Sales**")
-                top_s = sku_agg.sort_values("Sales", ascending=False).head(10)
-                st.dataframe(style_currency_table(top_s), use_container_width=True, height=360)
-
-            st.markdown("#### Bottom 10 SKUs")
-            b1, b2 = st.columns(2)
-            with b1:
-                st.markdown("**Bottom by Units**")
-                bot_u = sku_agg.sort_values("Units", ascending=True).head(10)
-                st.dataframe(style_number_table(bot_u), use_container_width=True, height=360)
-            with b2:
-                st.markdown("**Bottom by Sales**")
-                bot_s = sku_agg.sort_values("Sales", ascending=True).head(10)
-                st.dataframe(style_currency_table(bot_s), use_container_width=True, height=360)
+                st.markdown("**Top 10 by Sales ($)**")
+                st.dataframe(style_currency_table(top_sales), use_container_width=True, height=340, hide_index=True)
+                st.markdown("**Bottom 10 by Sales ($)**")
+                st.dataframe(style_currency_table(bot_sales), use_container_width=True, height=340, hide_index=True)
 
 with tab_retail_totals:
     st.markdown("### Retailer Totals (by week)")
@@ -735,11 +752,17 @@ with tab_retail_scorecard:
             rdf = df[df["Retailer"] == sel_r].copy()
 
             m = wow_mom_metrics(rdf)
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("YTD Units", f"{m['ytd_units']:,.0f}", f"{m['wow_units']:+,.0f}" if m["wow_units"] is not None else None)
-            c2.metric("YTD Sales", f"${m['ytd_sales']:,.2f}", f"${m['wow_sales']:+,.2f}" if m["wow_sales"] is not None else None)
-            c3.metric("MoM Units", "" if m["mom_units"] is None else f"{m['mom_units']:+,.0f}")
-            c4.metric("MoM Sales", "" if m["mom_sales"] is None else f"${m['mom_sales']:+,.2f}")
+
+            # KPIs: show YTD totals, and show WoW + MoM as their own small numbers underneath
+            k1, k2 = st.columns(2)
+            k1.metric("YTD Units", f"{m['ytd_units']:,.0f}")
+            k2.metric("YTD Sales", f"${m['ytd_sales']:,.2f}")
+
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("WoW Units", "" if m["wow_units"] is None else f"{m['wow_units']:+,.0f}")
+            s2.metric("WoW Sales", "" if m["wow_sales"] is None else f"${m['wow_sales']:+,.2f}")
+            s3.metric("MoM Units", "" if m["mom_units"] is None else f"{m['mom_units']:+,.0f}")
+            s4.metric("MoM Sales", "" if m["mom_sales"] is None else f"${m['mom_sales']:+,.2f}")
 
             st.markdown("#### Monthly totals")
             months_n = st.selectbox("Months to show", options=[3,6,12], index=1, key="retail_score_months")
@@ -753,27 +776,29 @@ with tab_retail_scorecard:
             sku_agg = rdf.groupby("SKU", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
             sku_agg["Sales"] = sku_agg["Sales"].fillna(0.0)
 
-            st.markdown("#### Top SKUs")
+            # Pick top/bottom sets by metric, then display in vendor-map SKU order
+            top_units = sku_agg.sort_values("Units", ascending=False).head(10)[["SKU","Units"]].copy()
+            top_sales = sku_agg.sort_values("Sales", ascending=False).head(10)[["SKU","Sales"]].copy()
+            bot_units = sku_agg.sort_values("Units", ascending=True).head(10)[["SKU","Units"]].copy()
+            bot_sales = sku_agg.sort_values("Sales", ascending=True).head(10)[["SKU","Sales"]].copy()
+
+            top_units = reorder_skus_for_retailer(top_units, sel_r, sku_order_map)
+            top_sales = reorder_skus_for_retailer(top_sales, sel_r, sku_order_map)
+            bot_units = reorder_skus_for_retailer(bot_units, sel_r, sku_order_map)
+            bot_sales = reorder_skus_for_retailer(bot_sales, sel_r, sku_order_map)
+
+            st.markdown("#### Top / Bottom SKUs")
             t1, t2 = st.columns(2)
             with t1:
-                st.markdown("**Top by Units**")
-                top_u = sku_agg.sort_values("Units", ascending=False).head(10)
-                st.dataframe(style_number_table(top_u), use_container_width=True, height=360)
+                st.markdown("**Top 10 by Units**")
+                st.dataframe(style_number_table(top_units), use_container_width=True, height=340, hide_index=True)
+                st.markdown("**Bottom 10 by Units**")
+                st.dataframe(style_number_table(bot_units), use_container_width=True, height=340, hide_index=True)
             with t2:
-                st.markdown("**Top by Sales**")
-                top_s = sku_agg.sort_values("Sales", ascending=False).head(10)
-                st.dataframe(style_currency_table(top_s), use_container_width=True, height=360)
-
-            st.markdown("#### Bottom 10 SKUs")
-            b1, b2 = st.columns(2)
-            with b1:
-                st.markdown("**Bottom by Units**")
-                bot_u = sku_agg.sort_values("Units", ascending=True).head(10)
-                st.dataframe(style_number_table(bot_u), use_container_width=True, height=360)
-            with b2:
-                st.markdown("**Bottom by Sales**")
-                bot_s = sku_agg.sort_values("Sales", ascending=True).head(10)
-                st.dataframe(style_currency_table(bot_s), use_container_width=True, height=360)
+                st.markdown("**Top 10 by Sales ($)**")
+                st.dataframe(style_currency_table(top_sales), use_container_width=True, height=340, hide_index=True)
+                st.markdown("**Bottom 10 by Sales ($)**")
+                st.dataframe(style_currency_table(bot_sales), use_container_width=True, height=340, hide_index=True)
 
 with tab_skus:
     st.markdown("### SKU Table (filtered)")
@@ -816,4 +841,15 @@ with tab_backup:
         )
 
     st.divider()
-    st.caption("Restore by placing a backed up sales_store.csv into ./data/ and reboot the app.")
+    st.subheader("Backup / Restore database")
+
+    st.caption("Backup = your stored sales database (sales_store.csv). You can restore by uploading a prior backup.")
+
+    backup_up = st.file_uploader("Upload backup sales_store.csv", type=["csv"], key="restore_sales_store")
+    if backup_up is not None:
+        if st.button("Restore uploaded backup (overwrite current database)"):
+            try:
+                DEFAULT_SALES_STORE.write_bytes(backup_up.getbuffer())
+                st.success("Backup restored. Please refresh the page (or rerun) to see the restored data.")
+            except Exception as e:
+                st.error(f"Restore failed: {e}")
