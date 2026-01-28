@@ -149,8 +149,8 @@ def read_weekly_workbook(file, year: int) -> pd.DataFrame:
         df["Units"] = pd.to_numeric(df["Units"], errors="coerce").fillna(0).astype(float)
         df = df[df["SKU"].astype(str).str.strip().ne("")]
         df["Retailer"] = _normalize_retailer(sh)
-        df["StartDate"] = start_d
-        df["EndDate"] = end_d
+        df["StartDate"] = pd.to_datetime(start_d)
+        df["EndDate"] = pd.to_datetime(end_d)
         df["SourceFile"] = getattr(file, "name", "uploaded.xlsx")
         rows.append(df)
     if not rows:
@@ -164,7 +164,7 @@ def load_sales_store() -> pd.DataFrame:
             df = pd.read_csv(DEFAULT_SALES_STORE)
             for c in ["StartDate","EndDate"]:
                 if c in df.columns:
-                    df[c] = pd.to_datetime(df[c], errors="coerce").dt.date
+                    df[c] = pd.to_datetime(df[c], errors="coerce")
             return df
         except Exception:
             return pd.DataFrame()
@@ -183,9 +183,9 @@ def upsert_sales(existing: pd.DataFrame, new_rows: pd.DataFrame) -> pd.DataFrame
 
     for c in ["StartDate","EndDate"]:
         if c in existing.columns:
-            existing[c] = pd.to_datetime(existing[c], errors="coerce").dt.date
+            existing[c] = pd.to_datetime(existing[c], errors="coerce")
         if c in new_rows.columns:
-            new_rows[c] = pd.to_datetime(new_rows[c], errors="coerce").dt.date
+            new_rows[c] = pd.to_datetime(new_rows[c], errors="coerce")
 
     key_cols = ["Retailer","SKU","StartDate","EndDate","SourceFile"]
     combined = pd.concat([existing, new_rows], ignore_index=True)
