@@ -306,6 +306,34 @@ def style_number_table(df: pd.DataFrame, diff_like_cols=None):
 
 
 
+
+def style_units_wide_table(df: pd.DataFrame, diff_like_cols=None, avg_col_name: str = "Avg"):
+    """Units wide tables: show weekly + Diff as integers (no decimals); Avg keeps 2 decimals."""
+    if df is None or df.empty:
+        return df
+    diff_like_cols = diff_like_cols or []
+    fmt = {}
+    for c in df.columns:
+        if pd.api.types.is_numeric_dtype(df[c]):
+            if c == avg_col_name:
+                fmt[c] = "{:,.2f}"
+            else:
+                fmt[c] = "{:,.0f}"
+    sty = df.style.format(fmt)
+    cols_to_color = [c for c in df.columns if c in diff_like_cols]
+    if cols_to_color:
+        sty = sty.applymap(_diff_color, subset=cols_to_color)
+    return sty
+
+def style_units_only_table(df: pd.DataFrame, units_col: str = "Units"):
+    """Format a two-column (SKU, Units) table with integer units."""
+    if df is None or df.empty:
+        return df
+    fmt = {}
+    if units_col in df.columns and pd.api.types.is_numeric_dtype(df[units_col]):
+        fmt[units_col] = "{:,.0f}"
+    return df.style.format(fmt)
+
 def style_units_sales_table(df: pd.DataFrame, diff_like_cols=None):
     """Format Units as number and Sales as currency; optionally color diff-like cols."""
     if df is None or df.empty:
@@ -406,16 +434,20 @@ def reorder_skus_for_retailer(wide: pd.DataFrame, retailer: str, sku_order_map: 
     return out
 
 def month_table(df: pd.DataFrame, group_col: str):
-    """Month totals for a filtered df: month, units, sales"""
+    """Month totals for a filtered df: Month, Units, Sales (Month shown as name)."""
     if df is None or df.empty:
         return pd.DataFrame(columns=["Month","Units","Sales"])
     d = df.copy()
-    d["Month"] = pd.to_datetime(d["StartDate"], errors="coerce").dt.to_period("M").astype(str)
-    g = d.groupby("Month", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
+    mdt = pd.to_datetime(d["StartDate"], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    d["_month_dt"] = mdt
+    g = d.groupby("_month_dt", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
     g["Sales"] = g["Sales"].fillna(0.0)
-    # sort chronologically
-    g["_m"] = pd.to_datetime(g["Month"] + "-01", errors="coerce")
-    g = g.sort_values("_m").drop(columns=["_m"])
+    g = g.sort_values("_month_dt")
+    g["Month"] = g["_month_dt"].dt.strftime("%B")
+    # If multiple years exist, disambiguate
+    if g["Month"].duplicated().any():
+        g["Month"] = g["_month_dt"].dt.strftime("%B %Y")
+    g = g.drop(columns=["_month_dt"])
     return g
 
 def wow_mom_metrics(df: pd.DataFrame):
@@ -575,8 +607,8 @@ else:
     cur_month_df = df.iloc[0:0].copy()
     prev_month_df = df.iloc[0:0].copy()
 
-tab_retail_totals, tab_vendor_totals, tab_unit_summary, tab_retail_scorecard, tab_vendor_scorecard, tab_skus, tab_unmapped, tab_backup = st.tabs(
-    ["Retailer Totals", "Vendor Totals", "Unit Summary", "Retailer Scorecard", "Vendor Scorecard", "SKUs", "Unmapped SKUs", "Backup / Exports"]
+tab_retail_totals, tab_vendor_totals, tab_unit_summary, tab_retail_scorecard, tab_vendor_scorecard, tab_skus, tab_unmapped, tab_no_sales, tab_backup = st.tabs(
+    ["Retailer Totals", "Vendor Totals", "Unit Summary", "Retailer Scorecard", "Vendor Scorecard", "SKUs", "Unmapped SKUs", "No Sales SKUs", "Backup / Restore"]
 )
 
 with tab_vendor_totals:
@@ -596,7 +628,7 @@ with tab_vendor_totals:
         if not wide_sales.empty:
             wide_sales = wide_sales.sort_values("Vendor", ascending=True)
             wide_sales = add_total_row(wide_sales, "Vendor")
-        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
+        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=_table_height(wide_sales), hide_index=True)
         st.download_button("Download sales table (CSV)", wide_sales.to_csv(index=False).encode("utf-8"), "vendor_sales_by_week.csv", "text/csv")
 
         st.markdown("#### Units by Vendor")
@@ -604,7 +636,7 @@ with tab_vendor_totals:
         if not wide_units.empty:
             wide_units = wide_units.sort_values("Vendor", ascending=True)
             wide_units = add_total_row(wide_units, "Vendor")
-        st.dataframe(style_number_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
+        st.dataframe(style_units_wide_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
         st.download_button("Download units table (CSV)", wide_units.to_csv(index=False).encode("utf-8"), "vendor_units_by_week.csv", "text/csv")
 
 with tab_unit_summary:
@@ -628,13 +660,29 @@ with tab_unit_summary:
             st.markdown("#### Units by SKU (weekly)")
             wide_u = build_wide_totals(rdf, "SKU", "Units", use_periods, avg_n)
             wide_u = reorder_skus_for_retailer(wide_u, sel_r, sku_order_map)
-            st.dataframe(style_number_table(wide_u, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
+
+            # Hide SKUs that have never sold (Units=0 and Sales=0 across all time for this retailer)
+            never_sold = rdf.groupby("SKU", as_index=False).agg(_u=("Units","sum"), _s=("Sales","sum"))
+            never_sold = set(never_sold[(never_sold["_u"]<=0) & (never_sold["_s"]<=0)]["SKU"].tolist())
+            if never_sold:
+                wide_u = wide_u[~wide_u["SKU"].isin(never_sold)].copy()
+
+            wide_u = add_total_row(wide_u, "SKU")
+            st.dataframe(style_units_wide_table(wide_u, diff_like_cols=['Diff']), use_container_width=True, height=_table_height(wide_u), hide_index=True)
             st.download_button("Download units (CSV)", wide_u.to_csv(index=False).encode("utf-8"), f"{sel_r}_sku_units.csv", "text/csv")
 
             st.markdown("#### Sales ($) by SKU (weekly)")
             wide_s = build_wide_totals(rdf, "SKU", "Sales", use_periods, avg_n)
             wide_s = reorder_skus_for_retailer(wide_s, sel_r, sku_order_map)
-            st.dataframe(style_currency_table(wide_s, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
+
+            # Hide SKUs that have never sold (Units=0 and Sales=0 across all time for this retailer)
+            never_sold = rdf.groupby("SKU", as_index=False).agg(_u=("Units","sum"), _s=("Sales","sum"))
+            never_sold = set(never_sold[(never_sold["_u"]<=0) & (never_sold["_s"]<=0)]["SKU"].tolist())
+            if never_sold:
+                wide_s = wide_s[~wide_s["SKU"].isin(never_sold)].copy()
+
+            wide_s = add_total_row(wide_s, "SKU")
+            st.dataframe(style_currency_table(wide_s, diff_like_cols=['Diff']), use_container_width=True, height=_table_height(wide_s), hide_index=True)
             st.download_button("Download sales (CSV)", wide_s.to_csv(index=False).encode("utf-8"), f"{sel_r}_sku_sales.csv", "text/csv")
 
 with tab_vendor_scorecard:
@@ -659,10 +707,10 @@ with tab_vendor_scorecard:
             k2.metric("YTD Sales", f"${m['ytd_sales']:,.2f}")
 
             s1, s2, s3, s4 = st.columns(4)
-            s1.metric("WoW Units", "" if m["wow_units"] is None else f"{m['wow_units']:+,.0f}")
-            s2.metric("WoW Sales", "" if m["wow_sales"] is None else f"${m['wow_sales']:+,.2f}")
-            s3.metric("MoM Units", "" if m["mom_units"] is None else f"{m['mom_units']:+,.0f}")
-            s4.metric("MoM Sales", "" if m["mom_sales"] is None else f"${m['mom_sales']:+,.2f}")
+            s1.metric("WoW Units", value="", delta="" if m["wow_units"] is None else f"{m['wow_units']:+,.0f}", delta_color="normal")
+            s2.metric("WoW Sales", value="", delta="" if m["wow_sales"] is None else f"${m['wow_sales']:+,.2f}", delta_color="normal")
+            s3.metric("MoM Units", value="", delta="" if m["mom_units"] is None else f"{m['mom_units']:+,.0f}", delta_color="normal")
+            s4.metric("MoM Sales", value="", delta="" if m["mom_sales"] is None else f"${m['mom_sales']:+,.2f}", delta_color="normal")
 
             st.markdown("#### Monthly totals")
             months_n = st.selectbox("Months to show", options=[3,6,12], index=1, key="vendor_score_months")
@@ -690,114 +738,24 @@ with tab_vendor_scorecard:
                 out = out.sort_values(["_rank","SKU"], ascending=[True, True]).drop(columns=["_rank"])
                 return out
 
-            # Pick top/bottom sets by metric, then display in vendor-map SKU order
-            top_units = _vm_sort(sku_agg.sort_values("Units", ascending=False).head(10)[["SKU","Units"]])
-            top_sales = _vm_sort(sku_agg.sort_values("Sales", ascending=False).head(10)[["SKU","Sales"]])
-            bot_units = _vm_sort(sku_agg.sort_values("Units", ascending=True).head(10)[["SKU","Units"]])
-            bot_sales = _vm_sort(sku_agg.sort_values("Sales", ascending=True).head(10)[["SKU","Sales"]])
-
-            st.markdown("#### Top / Bottom SKUs")
-            t1, t2 = st.columns(2)
-            with t1:
-                st.markdown("**Top 10 by Units**")
-                st.dataframe(style_number_table(top_units), use_container_width=True, height=340, hide_index=True)
-                st.markdown("**Bottom 10 by Units**")
-                st.dataframe(style_number_table(bot_units), use_container_width=True, height=340, hide_index=True)
-            with t2:
-                st.markdown("**Top 10 by Sales ($)**")
-                st.dataframe(style_currency_table(top_sales), use_container_width=True, height=340, hide_index=True)
-                st.markdown("**Bottom 10 by Sales ($)**")
-                st.dataframe(style_currency_table(bot_sales), use_container_width=True, height=340, hide_index=True)
-
-with tab_retail_totals:
-    st.markdown("### Retailer Totals (by week)")
-
-    tf = st.selectbox("Timeframe (weeks)", options=[2,4,8,12], index=2, key="retail_totals_tf")
-    avg_n = st.selectbox("Average over last (weeks)", options=[4,8,12], index=0, key="retail_totals_avg")
-
-    if df.empty or df["Retailer"].dropna().empty:
-        st.info("No data available yet. Upload weekly sheets to populate totals.")
-    else:
-        periods = _sorted_periods(df)
-        use_periods = periods[-min(len(periods), tf):]
-
-        st.markdown("#### Sales ($) by Retailer")
-        wide_sales = build_wide_totals(df, "Retailer", "Sales", use_periods, avg_n)
-        if not wide_sales.empty:
-            wide_sales = wide_sales.sort_values("Retailer", ascending=True)
-            wide_sales = add_total_row(wide_sales, "Retailer")
-        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
-        st.download_button("Download sales table (CSV)", wide_sales.to_csv(index=False).encode("utf-8"), "retailer_sales_by_week.csv", "text/csv")
-
-        st.markdown("#### Units by Retailer")
-        wide_units = build_wide_totals(df, "Retailer", "Units", use_periods, avg_n)
-        if not wide_units.empty:
-            wide_units = wide_units.sort_values("Retailer", ascending=True)
-            wide_units = add_total_row(wide_units, "Retailer")
-        st.dataframe(style_number_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
-        st.download_button("Download units table (CSV)", wide_units.to_csv(index=False).encode("utf-8"), "retailer_units_by_week.csv", "text/csv")
-
-with tab_retail_scorecard:
-    st.markdown("### Retailer Scorecard")
-
-    if df.empty:
-        st.info("Upload weekly sheets to see scorecards.")
-    else:
-        retailers = sorted([r for r in df["Retailer"].dropna().unique().tolist() if str(r).strip() != ""])
-        sel_r = st.selectbox("Retailer", options=retailers, index=0 if retailers else None, key="retail_score_retailer")
-
-        if not sel_r:
-            st.info("Select a retailer.")
-        else:
-            rdf = df[df["Retailer"] == sel_r].copy()
-
-            m = wow_mom_metrics(rdf)
-
-            # KPIs: show YTD totals, and show WoW + MoM as their own small numbers underneath
-            k1, k2 = st.columns(2)
-            k1.metric("YTD Units", f"{m['ytd_units']:,.0f}")
-            k2.metric("YTD Sales", f"${m['ytd_sales']:,.2f}")
-
-            s1, s2, s3, s4 = st.columns(4)
-            s1.metric("WoW Units", "" if m["wow_units"] is None else f"{m['wow_units']:+,.0f}")
-            s2.metric("WoW Sales", "" if m["wow_sales"] is None else f"${m['wow_sales']:+,.2f}")
-            s3.metric("MoM Units", "" if m["mom_units"] is None else f"{m['mom_units']:+,.0f}")
-            s4.metric("MoM Sales", "" if m["mom_sales"] is None else f"${m['mom_sales']:+,.2f}")
-
-            st.markdown("#### Monthly totals")
-            months_n = st.selectbox("Months to show", options=[3,6,12], index=1, key="retail_score_months")
-            mt = month_table(rdf, "Retailer")
-            if mt.empty:
-                st.info("No month data yet.")
-            else:
-                mt_show = mt.tail(min(len(mt), months_n)).copy()
-                st.dataframe(style_units_sales_table(mt_show), use_container_width=True, height=320)
-
-            sku_agg = rdf.groupby("SKU", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
-            sku_agg["Sales"] = sku_agg["Sales"].fillna(0.0)
-
-            # Pick top/bottom sets by metric, then display in vendor-map SKU order
+            # Pick top/bottom sets by metric (sorted)
             top_units = sku_agg.sort_values("Units", ascending=False).head(10)[["SKU","Units"]].copy()
             top_sales = sku_agg.sort_values("Sales", ascending=False).head(10)[["SKU","Sales"]].copy()
-            bot_units = sku_agg.sort_values("Units", ascending=True).head(10)[["SKU","Units"]].copy()
-            bot_sales = sku_agg.sort_values("Sales", ascending=True).head(10)[["SKU","Sales"]].copy()
+            bot_units = sku_agg.sort_values("Units", ascending=True).head(15)[["SKU","Units"]].copy()
+            bot_sales = sku_agg.sort_values("Sales", ascending=True).head(15)[["SKU","Sales"]].copy()
 
-            top_units = reorder_skus_for_retailer(top_units, sel_r, sku_order_map)
-            top_sales = reorder_skus_for_retailer(top_sales, sel_r, sku_order_map)
-            bot_units = reorder_skus_for_retailer(bot_units, sel_r, sku_order_map)
-            bot_sales = reorder_skus_for_retailer(bot_sales, sel_r, sku_order_map)
 
             st.markdown("#### Top / Bottom SKUs")
             t1, t2 = st.columns(2)
             with t1:
                 st.markdown("**Top 10 by Units**")
-                st.dataframe(style_number_table(top_units), use_container_width=True, height=340, hide_index=True)
-                st.markdown("**Bottom 10 by Units**")
-                st.dataframe(style_number_table(bot_units), use_container_width=True, height=340, hide_index=True)
+                st.dataframe(style_units_only_table(top_units), use_container_width=True, height=340, hide_index=True)
+                st.markdown("**Bottom 15 by Units**")
+                st.dataframe(style_units_only_table(bot_units), use_container_width=True, height=340, hide_index=True)
             with t2:
                 st.markdown("**Top 10 by Sales ($)**")
                 st.dataframe(style_currency_table(top_sales), use_container_width=True, height=340, hide_index=True)
-                st.markdown("**Bottom 10 by Sales ($)**")
+                st.markdown("**Bottom 15 by Sales ($)**")
                 st.dataframe(style_currency_table(bot_sales), use_container_width=True, height=340, hide_index=True)
 
 with tab_skus:
@@ -817,8 +775,24 @@ with tab_unmapped:
         st.dataframe(um, use_container_width=True, height=600, hide_index=True)
         st.download_button("Download CSV", um.to_csv(index=False).encode("utf-8"), "unmapped_rows.csv", "text/csv")
 
+
+with tab_no_sales:
+    st.markdown("### No Sales SKUs (never sold yet)")
+    if df.empty:
+        st.info("Upload weekly sheets to identify SKUs with no sales yet.")
+    else:
+        sold = df.groupby(["Retailer","Vendor","SKU"], as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
+        no_sold = sold[(sold["Units"]<=0) & (sold["Sales"]<=0)].copy()
+        no_sold["Status"] = "No units or sales yet"
+        no_sold = no_sold[["Retailer","Vendor","SKU","Status"]].sort_values(["Retailer","Vendor","SKU"])
+        if no_sold.empty:
+            st.success("All mapped SKUs have sales/units recorded.")
+        else:
+            st.dataframe(no_sold, use_container_width=True, height=_table_height(no_sold), hide_index=True)
+            st.download_button("Download (CSV)", no_sold.to_csv(index=False).encode("utf-8"), "no_sales_skus.csv", "text/csv")
+
 with tab_backup:
-    st.markdown("### Backup / Exports")
+    st.markdown("### Backup / Restore")
     st.write("These exports include **all stored rows**, not just filtered rows.")
     st.write(f"Stored rows: **{len(enriched):,}**")
 
