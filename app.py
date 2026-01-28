@@ -245,6 +245,69 @@ def _format_period(d: date) -> str:
     except Exception:
         return str(d)
 
+
+def _is_number(x):
+    try:
+        return pd.notna(x) and isinstance(float(x), (float,int))
+    except Exception:
+        return False
+
+def _diff_color(val):
+    try:
+        v = float(val)
+    except Exception:
+        return ""
+    if v > 0:
+        return "color: green;"
+    if v < 0:
+        return "color: red;"
+    return ""
+
+def style_currency_table(df: pd.DataFrame, diff_like_cols=None):
+    """Currency formatting: $1,234.56 and red/green for diff-like cols."""
+    if df is None or df.empty:
+        return df
+    diff_like_cols = diff_like_cols or []
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    sty = df.style.format({c: "${:,.2f}" for c in num_cols})
+    # color diff-like cols
+    cols_to_color = [c for c in df.columns if c in diff_like_cols]
+    if cols_to_color:
+        sty = sty.applymap(_diff_color, subset=cols_to_color)
+    return sty
+
+def style_number_table(df: pd.DataFrame, diff_like_cols=None):
+    """Number formatting: 1,234.56 and red/green for diff-like cols."""
+    if df is None or df.empty:
+        return df
+    diff_like_cols = diff_like_cols or []
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    sty = df.style.format({c: "{:,.2f}" for c in num_cols})
+    cols_to_color = [c for c in df.columns if c in diff_like_cols]
+    if cols_to_color:
+        sty = sty.applymap(_diff_color, subset=cols_to_color)
+    return sty
+
+
+
+def style_units_sales_table(df: pd.DataFrame, diff_like_cols=None):
+    """Format Units as number and Sales as currency; optionally color diff-like cols."""
+    if df is None or df.empty:
+        return df
+    diff_like_cols = diff_like_cols or []
+    fmt = {}
+    if "Units" in df.columns and pd.api.types.is_numeric_dtype(df["Units"]):
+        fmt["Units"] = "{:,.2f}"
+    if "Sales" in df.columns and pd.api.types.is_numeric_dtype(df["Sales"]):
+        fmt["Sales"] = "${:,.2f}"
+    sty = df.style.format(fmt)
+    cols_to_color = [c for c in df.columns if c in diff_like_cols]
+    if cols_to_color:
+        sty = sty.applymap(_diff_color, subset=cols_to_color)
+    return sty
+
+
+
 def build_wide_totals(df: pd.DataFrame, index_col: str, value_col: str, periods: list[date], avg_weeks: int):
     """Return a wide table: index_col + period columns + Diff + Avg."""
     if df is None or df.empty:
@@ -471,12 +534,12 @@ with tab_vendor_totals:
 
         st.markdown("#### Sales ($) by Vendor")
         wide_sales = build_wide_totals(df, "Vendor", "Sales", use_periods, avg_n)
-        st.dataframe(wide_sales, use_container_width=True, height=520)
+        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=520)
         st.download_button("Download sales table (CSV)", wide_sales.to_csv(index=False).encode("utf-8"), "vendor_sales_by_week.csv", "text/csv")
 
         st.markdown("#### Units by Vendor")
         wide_units = build_wide_totals(df, "Vendor", "Units", use_periods, avg_n)
-        st.dataframe(wide_units, use_container_width=True, height=520)
+        st.dataframe(style_number_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=520)
         st.download_button("Download units table (CSV)", wide_units.to_csv(index=False).encode("utf-8"), "vendor_units_by_week.csv", "text/csv")
 
 with tab_unit_summary:
@@ -535,7 +598,7 @@ with tab_vendor_scorecard:
                 st.info("No month data yet.")
             else:
                 mt_show = mt.tail(min(len(mt), months_n)).copy()
-                st.dataframe(mt_show, use_container_width=True, height=320)
+                st.dataframe(style_units_sales_table(mt_show), use_container_width=True, height=320)
 
             sku_agg = vdf.groupby("SKU", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
             sku_agg["Sales"] = sku_agg["Sales"].fillna(0.0)
@@ -545,22 +608,22 @@ with tab_vendor_scorecard:
             with t1:
                 st.markdown("**Top by Units**")
                 top_u = sku_agg.sort_values("Units", ascending=False).head(10)
-                st.dataframe(top_u, use_container_width=True, height=360)
+                st.dataframe(style_number_table(top_u), use_container_width=True, height=360)
             with t2:
                 st.markdown("**Top by Sales**")
                 top_s = sku_agg.sort_values("Sales", ascending=False).head(10)
-                st.dataframe(top_s, use_container_width=True, height=360)
+                st.dataframe(style_currency_table(top_s), use_container_width=True, height=360)
 
             st.markdown("#### Bottom 10 SKUs")
             b1, b2 = st.columns(2)
             with b1:
                 st.markdown("**Bottom by Units**")
                 bot_u = sku_agg.sort_values("Units", ascending=True).head(10)
-                st.dataframe(bot_u, use_container_width=True, height=360)
+                st.dataframe(style_number_table(bot_u), use_container_width=True, height=360)
             with b2:
                 st.markdown("**Bottom by Sales**")
                 bot_s = sku_agg.sort_values("Sales", ascending=True).head(10)
-                st.dataframe(bot_s, use_container_width=True, height=360)
+                st.dataframe(style_currency_table(bot_s), use_container_width=True, height=360)
 
 with tab_retail_totals:
     st.markdown("### Retailer Totals (by week)")
@@ -576,12 +639,12 @@ with tab_retail_totals:
 
         st.markdown("#### Sales ($) by Retailer")
         wide_sales = build_wide_totals(df, "Retailer", "Sales", use_periods, avg_n)
-        st.dataframe(wide_sales, use_container_width=True, height=520)
+        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=520)
         st.download_button("Download sales table (CSV)", wide_sales.to_csv(index=False).encode("utf-8"), "retailer_sales_by_week.csv", "text/csv")
 
         st.markdown("#### Units by Retailer")
         wide_units = build_wide_totals(df, "Retailer", "Units", use_periods, avg_n)
-        st.dataframe(wide_units, use_container_width=True, height=520)
+        st.dataframe(style_number_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=520)
         st.download_button("Download units table (CSV)", wide_units.to_csv(index=False).encode("utf-8"), "retailer_units_by_week.csv", "text/csv")
 
 with tab_retail_scorecard:
@@ -612,7 +675,7 @@ with tab_retail_scorecard:
                 st.info("No month data yet.")
             else:
                 mt_show = mt.tail(min(len(mt), months_n)).copy()
-                st.dataframe(mt_show, use_container_width=True, height=320)
+                st.dataframe(style_units_sales_table(mt_show), use_container_width=True, height=320)
 
             sku_agg = rdf.groupby("SKU", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
             sku_agg["Sales"] = sku_agg["Sales"].fillna(0.0)
@@ -622,22 +685,22 @@ with tab_retail_scorecard:
             with t1:
                 st.markdown("**Top by Units**")
                 top_u = sku_agg.sort_values("Units", ascending=False).head(10)
-                st.dataframe(top_u, use_container_width=True, height=360)
+                st.dataframe(style_number_table(top_u), use_container_width=True, height=360)
             with t2:
                 st.markdown("**Top by Sales**")
                 top_s = sku_agg.sort_values("Sales", ascending=False).head(10)
-                st.dataframe(top_s, use_container_width=True, height=360)
+                st.dataframe(style_currency_table(top_s), use_container_width=True, height=360)
 
             st.markdown("#### Bottom 10 SKUs")
             b1, b2 = st.columns(2)
             with b1:
                 st.markdown("**Bottom by Units**")
                 bot_u = sku_agg.sort_values("Units", ascending=True).head(10)
-                st.dataframe(bot_u, use_container_width=True, height=360)
+                st.dataframe(style_number_table(bot_u), use_container_width=True, height=360)
             with b2:
                 st.markdown("**Bottom by Sales**")
                 bot_s = sku_agg.sort_values("Sales", ascending=True).head(10)
-                st.dataframe(bot_s, use_container_width=True, height=360)
+                st.dataframe(style_currency_table(bot_s), use_container_width=True, height=360)
 
 with tab_skus:
     st.markdown("### SKU Table (filtered)")
