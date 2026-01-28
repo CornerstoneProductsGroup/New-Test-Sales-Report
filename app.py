@@ -550,6 +550,82 @@ def wow_mom_metrics(df: pd.DataFrame):
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 
+# =========================
+# Global YTD KPIs (All Retailers Combined)
+# =========================
+metrics_all = wow_mom_metrics(df)
+
+
+st.markdown("## 📊 Year-to-Date Overview (All Retailers)")
+
+def _fmt_signed_int(v):
+    if v is None:
+        return "—"
+    sign = "+" if v > 0 else ("-" if v < 0 else "")
+    return f"{sign}{fmt_int(abs(v))}" if sign else fmt_int(0)
+
+def _fmt_signed_currency(v):
+    if v is None:
+        return "—"
+    sign = "+" if v > 0 else ("-" if v < 0 else "")
+    s = f"${abs(float(v)):,.2f}"
+    return f"{sign}{s}" if sign else "$0.00"
+
+def _color(v):
+    if v is None:
+        return "inherit"
+    if float(v) > 0:
+        return "green"
+    if float(v) < 0:
+        return "red"
+    return "inherit"
+
+# Totals
+total_units = metrics_all.get("ytd_units", 0.0)
+total_sales = metrics_all.get("ytd_sales", 0.0)
+
+# Deltas
+mom_units = metrics_all.get("mom_units", None)
+mom_sales = metrics_all.get("mom_sales", None)
+wow_units = metrics_all.get("wow_units", None)
+wow_sales = metrics_all.get("wow_sales", None)
+
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.metric("Total Units (YTD)", fmt_int(total_units))
+with c2:
+    st.metric("Total Sales (YTD)", fmt_currency(total_sales))
+with c3:
+    st.markdown(
+        f"<div style='font-size:14px; color: gray;'>MoM Units</div>"
+        f"<div style='font-size:28px; font-weight:600; color:{_color(mom_units)};'>{_fmt_signed_int(mom_units)}</div>",
+        unsafe_allow_html=True
+    )
+
+c4, c5, c6 = st.columns(3)
+with c4:
+    st.markdown(
+        f"<div style='font-size:14px; color: gray;'>MoM Sales</div>"
+        f"<div style='font-size:28px; font-weight:600; color:{_color(mom_sales)};'>{_fmt_signed_currency(mom_sales)}</div>",
+        unsafe_allow_html=True
+    )
+with c5:
+    st.markdown(
+        f"<div style='font-size:14px; color: gray;'>WoW Units</div>"
+        f"<div style='font-size:28px; font-weight:600; color:{_color(wow_units)};'>{_fmt_signed_int(wow_units)}</div>",
+        unsafe_allow_html=True
+    )
+with c6:
+    st.markdown(
+        f"<div style='font-size:14px; color: gray;'>WoW Sales</div>"
+        f"<div style='font-size:28px; font-weight:600; color:{_color(wow_sales)};'>{_fmt_signed_currency(wow_sales)}</div>",
+        unsafe_allow_html=True
+    )
+
+st.divider()
+
+
+
 with st.sidebar:
     st.header("Data Inputs")
 
