@@ -550,13 +550,49 @@ def wow_mom_metrics(df: pd.DataFrame):
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 
-# =========================
-# Global YTD KPIs (All Retailers Combined)
-# =========================
-if st.button("Clear ALL stored sales data"):
+
+with st.sidebar:
+    st.header("Data Inputs")
+
+    this_year = date.today().year
+    year = st.selectbox(
+        "Year (for filename date parsing)",
+        options=list(range(this_year - 3, this_year + 2)),
+        index=3
+    )
+
+    st.subheader("Vendor Map")
+    vm_upload = st.file_uploader("Upload Vendor Map (.xlsx)", type=["xlsx"], key="vm_up")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("Use uploaded as default", disabled=vm_upload is None):
+            DEFAULT_VENDOR_MAP.write_bytes(vm_upload.getbuffer())
+            st.success("Saved as default vendor map.")
+    with col_b:
+        if st.button("Reload default map"):
+            st.rerun()
+
+    st.subheader("Weekly Sales Workbooks")
+    wk_uploads = st.file_uploader(
+        "Upload weekly sales workbook(s) (.xlsx)",
+        type=["xlsx"],
+        accept_multiple_files=True,
+        key="wk_up"
+    )
+    if st.button("Ingest uploads", disabled=not wk_uploads):
+        for f in wk_uploads:
+            new_rows = read_weekly_workbook(f, year=year)
+            upsert_sales(new_rows)
+        st.success("Ingested uploads into the sales store.")
+        st.rerun()
+
+    st.divider()
+    if st.button("Clear ALL stored sales data"):
         if DEFAULT_SALES_STORE.exists():
             DEFAULT_SALES_STORE.unlink()
         st.warning("Sales store cleared.")
+        st.rerun()
+
 
 # Load vendor map
 if vm_upload is not None:
