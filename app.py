@@ -1863,8 +1863,6 @@ with tab_retailer_scorecard:
                 wk["Units"] = pd.to_numeric(wk["Units"], errors="coerce").fillna(0)
 
                 # Join price/vendor from sku_mapping if available (dedupe per SKU for this retailer)
-                vendor_col = "vendor"
-                price_col = "unit_price"
                 if table_exists(conn, "sku_mapping"):
                     try:
                         m = pd.read_sql_query("SELECT retailer, vendor, sku, unit_price FROM sku_mapping", conn)
@@ -1874,7 +1872,6 @@ with tab_retailer_scorecard:
                         m["unit_price"] = pd.to_numeric(m["unit_price"], errors="coerce")
                         m = m[m["retailer"] == r_sel].copy()
                         if not m.empty:
-                            # keep first non-null per sku
                             m = (m.sort_values(["sku"])
                                    .groupby("sku", as_index=False)
                                    .agg(vendor=("vendor","first"), unit_price=("unit_price","first")))
@@ -1947,6 +1944,7 @@ with tab_retailer_scorecard:
                 v_disp["Sales"] = v_disp["Sales"].apply(lambda x: f"${float(x):,.2f}")
                 v_disp = v_disp.rename(columns={"vendor": "Vendor"})
                 st.dataframe(v_disp, use_container_width=True, hide_index=True, height=350)
+
 
 with tab_vendor_scorecard:
     st.subheader("Vendor Scorecard")
