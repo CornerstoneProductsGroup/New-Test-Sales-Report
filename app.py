@@ -553,7 +553,7 @@ st.title(APP_TITLE)
 # =========================
 # Global YTD KPIs (All Retailers Combined)
 # =========================
-    if st.button("Clear ALL stored sales data"):
+if st.button("Clear ALL stored sales data"):
         if DEFAULT_SALES_STORE.exists():
             DEFAULT_SALES_STORE.unlink()
         st.warning("Sales store cleared.")
