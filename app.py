@@ -553,55 +553,6 @@ st.title(APP_TITLE)
 # =========================
 # Global YTD KPIs (All Retailers Combined)
 # =========================
-metrics_all = wow_mom_metrics(df)
-
-
-
-
-
-with st.sidebar:
-    st.header("Data Inputs")
-
-    this_year = date.today().year
-    year = st.selectbox("Year (for filename date parsing)", options=list(range(this_year-3, this_year+2)), index=3)
-
-    st.subheader("Vendor Map")
-    vm_upload = st.file_uploader("Upload Vendor Map (.xlsx)", type=["xlsx"], key="vm_up")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("Use uploaded as default", disabled=vm_upload is None):
-            DEFAULT_VENDOR_MAP.write_bytes(vm_upload.getbuffer())
-            st.success("Saved vendor map as default.")
-            st.cache_data.clear()
-    with col_b:
-        if st.button("Reset cache"):
-            st.cache_data.clear()
-            st.toast("Cache cleared")
-
-    st.caption(f"Current default vendor map: {DEFAULT_VENDOR_MAP if DEFAULT_VENDOR_MAP.exists() else 'None'}")
-
-    st.subheader("Weekly Sales Workbooks")
-    sales_uploads = st.file_uploader(
-        "Upload weekly workbook(s) (.xlsx). Each sheet name = retailer; 2 columns = SKU, Units.",
-        type=["xlsx"],
-        accept_multiple_files=True,
-        key="sales_up"
-    )
-
-    if st.button("Ingest uploads", disabled=not sales_uploads):
-        if not DEFAULT_VENDOR_MAP.exists() and vm_upload is None:
-            st.error("Upload a vendor map first (or save one as default).")
-        else:
-            existing = load_sales_store()
-            all_new = []
-            for f in sales_uploads:
-                all_new.append(read_weekly_workbook(f, year=year))
-            new_rows = pd.concat(all_new, ignore_index=True) if all_new else pd.DataFrame()
-            combined = upsert_sales(existing, new_rows)
-            save_sales_store(combined)
-            st.success(f"Ingested {len(new_rows):,} rows. Store now has {len(combined):,} rows.")
-
-    st.divider()
     if st.button("Clear ALL stored sales data"):
         if DEFAULT_SALES_STORE.exists():
             DEFAULT_SALES_STORE.unlink()
