@@ -608,6 +608,35 @@ tab_retail_totals, tab_vendor_totals, tab_unit_summary, tab_retail_scorecard, ta
     ["Retailer Totals", "Vendor Totals", "Unit Summary", "Retailer Scorecard", "Vendor Scorecard", "SKUs", "Unmapped SKUs", "No Sales SKUs", "Backup / Restore"]
 )
 
+
+with tab_retail_totals:
+    st.markdown("### Retailer Totals (by week)")
+
+    tf = st.selectbox("Timeframe (weeks)", options=[2,4,8,12], index=2, key="retail_totals_tf")
+    avg_n = st.selectbox("Average over last (weeks)", options=[4,8,12], index=0, key="retail_totals_avg")
+
+    if df.empty or df["Retailer"].dropna().empty:
+        st.info("No data available yet. Upload weekly sheets to populate totals.")
+    else:
+        periods = _sorted_periods(df)
+        use_periods = periods[-min(len(periods), tf):]
+
+        st.markdown("#### Sales ($) by Retailer")
+        wide_sales = build_wide_totals(df, "Retailer", "Sales", use_periods, avg_n)
+        if not wide_sales.empty:
+            wide_sales = wide_sales.sort_values("Retailer", ascending=True)
+            wide_sales = add_total_row(wide_sales, "Retailer")
+        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=_table_height(wide_sales, max_height=4000), hide_index=True)
+        st.download_button("Download sales table (CSV)", wide_sales.to_csv(index=False).encode("utf-8"), "retailer_sales_by_week.csv", "text/csv")
+
+        st.markdown("#### Units by Retailer")
+        wide_units = build_wide_totals(df, "Retailer", "Units", use_periods, avg_n)
+        if not wide_units.empty:
+            wide_units = wide_units.sort_values("Retailer", ascending=True)
+            wide_units = add_total_row(wide_units, "Retailer")
+        st.dataframe(style_units_wide_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=_table_height(wide_units, max_height=4000), hide_index=True)
+        st.download_button("Download units table (CSV)", wide_units.to_csv(index=False).encode("utf-8"), "retailer_units_by_week.csv", "text/csv")
+
 with tab_vendor_totals:
     st.markdown("### Vendor Totals (by week)")
 
@@ -681,6 +710,80 @@ with tab_unit_summary:
             wide_s = add_total_row(wide_s, "SKU")
             st.dataframe(style_currency_table(wide_s, diff_like_cols=['Diff']), use_container_width=True, height=_table_height(wide_s), hide_index=True)
             st.download_button("Download sales (CSV)", wide_s.to_csv(index=False).encode("utf-8"), f"{sel_r}_sku_sales.csv", "text/csv")
+
+
+with tab_retail_scorecard:
+    st.markdown("### Retailer Scorecard")
+
+    if df.empty:
+        st.info("Upload weekly sheets to see scorecards.")
+    else:
+        retailers = sorted([r for r in df["Retailer"].dropna().unique().tolist() if str(r).strip() != ""])
+        sel_retailer = st.selectbox("Retailer", options=retailers, index=0 if retailers else None, key="retail_score_retailer")
+
+        if not sel_retailer:
+            st.info("Select a retailer.")
+        else:
+            rdf = df[df["Retailer"] == sel_retailer].copy()
+
+            m = wow_mom_metrics(rdf)
+
+            k1, k2 = st.columns(2)
+            k1.metric("YTD Units", f"{m['ytd_units']:,.0f}")
+            k2.metric("YTD Sales", f"${m['ytd_sales']:,.2f}")
+
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("WoW Units", value="", delta="" if m["wow_units"] is None else f"{m['wow_units']:+,.0f}", delta_color="normal")
+            s2.metric("WoW Sales", value="", delta="" if m["wow_sales"] is None else f"${m['wow_sales']:+,.2f}", delta_color="normal")
+            s3.metric("MoM Units", value="", delta="" if m["mom_units"] is None else f"{m['mom_units']:+,.0f}", delta_color="normal")
+            s4.metric("MoM Sales", value="", delta="" if m["mom_sales"] is None else f"${m['mom_sales']:+,.2f}", delta_color="normal")
+
+            st.markdown("#### Monthly totals")
+            months_n = st.selectbox("Months to show", options=[3,6,12], index=1, key="retail_score_months")
+            mt = month_table(rdf, "Retailer")
+            if mt.empty:
+                st.info("No month data yet.")
+            else:
+                mt_show = mt.tail(min(len(mt), months_n)).copy()
+                st.dataframe(style_units_sales_table(mt_show), use_container_width=True, height=_table_height(mt_show), hide_index=True)
+
+            sku_agg = rdf.groupby(["SKU"], as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
+            sku_agg["Sales"] = sku_agg["Sales"].fillna(0.0)
+
+            sku_to_vendor = {}
+            if vmap is not None and not vmap.empty:
+                vm_sub = vmap[vmap["Retailer"] == sel_retailer].copy()
+                for _, rr in vm_sub.iterrows():
+                    s = rr.get("SKU")
+                    v = rr.get("Vendor")
+                    if pd.notna(s) and s not in sku_to_vendor:
+                        sku_to_vendor[s] = v
+
+            top_units = sku_agg.sort_values("Units", ascending=False).head(10)[["SKU","Units"]].copy()
+            top_sales = sku_agg.sort_values("Sales", ascending=False).head(10)[["SKU","Sales"]].copy()
+            bot_units = sku_agg.sort_values("Units", ascending=True).head(15)[["SKU","Units"]].copy()
+            bot_sales = sku_agg.sort_values("Sales", ascending=True).head(15)[["SKU","Sales"]].copy()
+
+            for tdf in [top_units, top_sales, bot_units, bot_sales]:
+                tdf["Vendor"] = tdf["SKU"].map(lambda s: sku_to_vendor.get(s, ""))
+
+            top_units = top_units[["SKU","Vendor","Units"]]
+            bot_units = bot_units[["SKU","Vendor","Units"]]
+            top_sales = top_sales[["SKU","Vendor","Sales"]]
+            bot_sales = bot_sales[["SKU","Vendor","Sales"]]
+
+            st.markdown("#### Top / Bottom SKUs")
+            t1, t2 = st.columns(2)
+            with t1:
+                st.markdown("**Top 10 by Units**")
+                st.dataframe(style_units_only_table(top_units), use_container_width=True, height=340, hide_index=True)
+                st.markdown("**Bottom 15 by Units**")
+                st.dataframe(style_units_only_table(bot_units), use_container_width=True, height=340, hide_index=True)
+            with t2:
+                st.markdown("**Top 10 by Sales ($)**")
+                st.dataframe(style_currency_table(top_sales), use_container_width=True, height=340, hide_index=True)
+                st.markdown("**Bottom 15 by Sales ($)**")
+                st.dataframe(style_currency_table(bot_sales), use_container_width=True, height=340, hide_index=True)
 
 with tab_vendor_scorecard:
     st.markdown("### Vendor Scorecard")
