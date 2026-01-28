@@ -461,7 +461,8 @@ def month_table(df: pd.DataFrame, group_col: str):
     if g["Month"].duplicated().any():
         g["Month"] = g["_month_dt"].dt.strftime("%B %Y")
     g = g.drop(columns=["_month_dt"])
-    return g
+    # Ensure Month is the first column
+    return g[["Month","Units","Sales"]]
 
 def wow_mom_metrics(df: pd.DataFrame):
     """Return dict with YTD units/sales and WoW/MoM deltas."""
@@ -582,26 +583,9 @@ sku_order_map = vmap.groupby('Retailer', sort=False)['SKU'].apply(list).to_dict(
 sales_store = load_sales_store()
 enriched = enrich_sales(sales_store, vmap)
 
-# Global filters
-st.subheader("Filters")
-f1, f2, f3, f4 = st.columns([1,1,1,2])
-with f1:
-    retailer_filter = st.multiselect("Retailer", sorted(enriched["Retailer"].dropna().unique()) if not enriched.empty else [])
-with f2:
-    vendor_filter = st.multiselect("Vendor", sorted(enriched["Vendor"].dropna().unique()) if not enriched.empty else [])
-with f3:
-    show_unmapped = st.checkbox("Show only unmapped SKUs (missing Vendor/Price)", value=False)
-with f4:
-    st.caption("Tip: Name weekly files like 'APP 1-1 thru 1-7.xlsx' so WoW/MoM works automatically.")
 
+# Global filters removed per request (use dedicated Totals/Scorecard tabs instead)
 df = enriched.copy()
-if retailer_filter:
-    df = df[df["Retailer"].isin(retailer_filter)]
-if vendor_filter:
-    df = df[df["Vendor"].isin(vendor_filter)]
-if show_unmapped:
-    df = df[df["Vendor"].isna() | df["Price"].isna()]
-
 unmapped_ct = int((enriched["Vendor"].isna() | enriched["Price"].isna()).sum()) if not enriched.empty else 0
 if unmapped_ct:
     st.warning(f"{unmapped_ct:,} row(s) are missing Vendor and/or Price after mapping. Use the 'Unmapped SKUs' tab to review.")
@@ -641,7 +625,7 @@ with tab_vendor_totals:
         if not wide_sales.empty:
             wide_sales = wide_sales.sort_values("Vendor", ascending=True)
             wide_sales = add_total_row(wide_sales, "Vendor")
-        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=_table_height(wide_sales), hide_index=True)
+        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=_table_height(wide_sales, max_height=4000), hide_index=True)
         st.download_button("Download sales table (CSV)", wide_sales.to_csv(index=False).encode("utf-8"), "vendor_sales_by_week.csv", "text/csv")
 
         st.markdown("#### Units by Vendor")
@@ -649,7 +633,7 @@ with tab_vendor_totals:
         if not wide_units.empty:
             wide_units = wide_units.sort_values("Vendor", ascending=True)
             wide_units = add_total_row(wide_units, "Vendor")
-        st.dataframe(style_units_wide_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
+        st.dataframe(style_units_wide_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=_table_height(wide_units, max_height=4000), hide_index=True)
         st.download_button("Download units table (CSV)", wide_units.to_csv(index=False).encode("utf-8"), "vendor_units_by_week.csv", "text/csv")
 
 with tab_unit_summary:
@@ -732,7 +716,7 @@ with tab_vendor_scorecard:
                 st.info("No month data yet.")
             else:
                 mt_show = mt.tail(min(len(mt), months_n)).copy()
-                st.dataframe(style_units_sales_table(mt_show), use_container_width=True, height=320)
+                st.dataframe(style_units_sales_table(mt_show), use_container_width=True, height=_table_height(mt_show), hide_index=True)
 
             sku_agg = vdf.groupby("SKU", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
             sku_agg["Sales"] = sku_agg["Sales"].fillna(0.0)
@@ -752,10 +736,29 @@ with tab_vendor_scorecard:
                 return out
 
             # Pick top/bottom sets by metric (sorted)
+            # Pick top/bottom sets by metric (sorted)
+            sku_to_retailer = {}
+            if vmap is not None and not vmap.empty:
+                vm_sub = vmap[vmap["Vendor"] == sel_vendor].copy()
+                # preserve vendor-map order: first retailer encountered for a SKU
+                for _, rr in vm_sub.iterrows():
+                    s = rr.get("SKU")
+                    r = rr.get("Retailer")
+                    if pd.notna(s) and s not in sku_to_retailer:
+                        sku_to_retailer[s] = r
+
             top_units = sku_agg.sort_values("Units", ascending=False).head(10)[["SKU","Units"]].copy()
             top_sales = sku_agg.sort_values("Sales", ascending=False).head(10)[["SKU","Sales"]].copy()
             bot_units = sku_agg.sort_values("Units", ascending=True).head(15)[["SKU","Units"]].copy()
             bot_sales = sku_agg.sort_values("Sales", ascending=True).head(15)[["SKU","Sales"]].copy()
+
+            # Add Retailer column and reorder as requested
+            for tdf in [top_units, top_sales, bot_units, bot_sales]:
+                tdf["Retailer"] = tdf["SKU"].map(lambda s: sku_to_retailer.get(s, ""))
+            top_units = top_units[["SKU","Retailer","Units"]]
+            bot_units = bot_units[["SKU","Retailer","Units"]]
+            top_sales = top_sales[["SKU","Retailer","Sales"]]
+            bot_sales = bot_sales[["SKU","Retailer","Sales"]]
 
 
             st.markdown("#### Top / Bottom SKUs")
