@@ -216,7 +216,7 @@ def agg_retailer(df: pd.DataFrame) -> pd.DataFrame:
     g["Sales"] = g["Sales"].fillna(0.0)
     return g.sort_values("Sales", ascending=False)
 
-def agg_sku(df: pd.DataFrame) -> pd.DataFrame:
+def agg_sku(df: pd.DataFrame, sku_order_map: dict | None = None) -> pd.DataFrame:
     g = df.groupby(["Retailer","SKU"], dropna=False, as_index=False).agg(
         Units=("Units","sum"),
         Sales=("Sales","sum"),
@@ -224,9 +224,25 @@ def agg_sku(df: pd.DataFrame) -> pd.DataFrame:
         Price=("Price", lambda x: x.dropna().iloc[0] if len(x.dropna()) else np.nan),
     )
     g["Sales"] = g["Sales"].fillna(0.0)
-    return g.sort_values("Units", ascending=False)
+
+    # Sort Retailer/Vendor names alphabetically, and SKUs in the same order as the vendor map (per retailer)
+    if sku_order_map:
+        # Build rank map per retailer for fast ordering
+        ranks = {}
+        for r, skus in sku_order_map.items():
+            ranks[r] = {s: i for i, s in enumerate(skus)}
+        def _rank(row):
+            r = row["Retailer"]
+            s = row["SKU"]
+            return ranks.get(r, {}).get(s, 10**9)
+        g["_sku_rank"] = g.apply(_rank, axis=1)
+        g = g.sort_values(["Retailer","_sku_rank","SKU"], ascending=[True, True, True]).drop(columns=["_sku_rank"])
+    else:
+        g = g.sort_values(["Retailer","SKU"], ascending=[True, True])
+    return g
 
 # -------------------------
+
 # UI
 # -------------------------
 def _sorted_periods(df: pd.DataFrame):
@@ -349,6 +365,45 @@ def build_wide_totals(df: pd.DataFrame, index_col: str, value_col: str, periods:
     if period_labels:
         wide = wide.sort_values(period_labels[-1], ascending=False)
     return wide
+
+
+def add_total_row(wide: pd.DataFrame, name_col: str, total_label: str = "TOTAL") -> pd.DataFrame:
+    """Append a TOTAL row summing numeric columns."""
+    if wide is None or wide.empty:
+        return wide
+    out = wide.copy()
+    num_cols = [c for c in out.columns if c != name_col]
+    # Only sum numeric columns
+    sums = {}
+    for c in num_cols:
+        if pd.api.types.is_numeric_dtype(out[c]):
+            sums[c] = out[c].sum()
+        else:
+            # leave blank for non-numeric
+            sums[c] = np.nan
+    total_row = {name_col: total_label, **sums}
+    out = pd.concat([out, pd.DataFrame([total_row])], ignore_index=True)
+    return out
+
+
+def reorder_skus_for_retailer(wide: pd.DataFrame, retailer: str, sku_order_map: dict) -> pd.DataFrame:
+    """Reorder wide SKU tables to match the vendor-map SKU order for the selected retailer."""
+    if wide is None or wide.empty:
+        return wide
+    if not sku_order_map or retailer not in sku_order_map:
+        return wide
+    order = sku_order_map.get(retailer, [])
+    name_col = "SKU" if "SKU" in wide.columns else wide.columns[0]
+    # Keep only rows present, in the vendor-map order; append any extras at the end (alphabetical)
+    present = wide[name_col].tolist()
+    ordered = [s for s in order if s in present]
+    extras = sorted([s for s in present if s not in set(ordered)])
+    final = ordered + extras
+    cat = pd.Categorical(wide[name_col], categories=final, ordered=True)
+    out = wide.copy()
+    out["_ord"] = cat
+    out = out.sort_values("_ord").drop(columns=["_ord"])
+    return out
 
 def month_table(df: pd.DataFrame, group_col: str):
     """Month totals for a filtered df: month, units, sales"""
@@ -475,6 +530,10 @@ else:
     st.info("Upload a vendor map in the sidebar to begin.")
     st.stop()
 
+
+# Preserve SKU display order as it appears in the vendor map (per retailer)
+sku_order_map = vmap.groupby('Retailer', sort=False)['SKU'].apply(list).to_dict()
+
 sales_store = load_sales_store()
 enriched = enrich_sales(sales_store, vmap)
 
@@ -534,12 +593,18 @@ with tab_vendor_totals:
 
         st.markdown("#### Sales ($) by Vendor")
         wide_sales = build_wide_totals(df, "Vendor", "Sales", use_periods, avg_n)
-        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=520)
+        if not wide_sales.empty:
+            wide_sales = wide_sales.sort_values("Vendor", ascending=True)
+            wide_sales = add_total_row(wide_sales, "Vendor")
+        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
         st.download_button("Download sales table (CSV)", wide_sales.to_csv(index=False).encode("utf-8"), "vendor_sales_by_week.csv", "text/csv")
 
         st.markdown("#### Units by Vendor")
         wide_units = build_wide_totals(df, "Vendor", "Units", use_periods, avg_n)
-        st.dataframe(style_number_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=520)
+        if not wide_units.empty:
+            wide_units = wide_units.sort_values("Vendor", ascending=True)
+            wide_units = add_total_row(wide_units, "Vendor")
+        st.dataframe(style_number_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
         st.download_button("Download units table (CSV)", wide_units.to_csv(index=False).encode("utf-8"), "vendor_units_by_week.csv", "text/csv")
 
 with tab_unit_summary:
@@ -562,12 +627,14 @@ with tab_unit_summary:
 
             st.markdown("#### Units by SKU (weekly)")
             wide_u = build_wide_totals(rdf, "SKU", "Units", use_periods, avg_n)
-            st.dataframe(wide_u, use_container_width=True, height=520)
+            wide_u = reorder_skus_for_retailer(wide_u, sel_r, sku_order_map)
+            st.dataframe(style_number_table(wide_u, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
             st.download_button("Download units (CSV)", wide_u.to_csv(index=False).encode("utf-8"), f"{sel_r}_sku_units.csv", "text/csv")
 
             st.markdown("#### Sales ($) by SKU (weekly)")
             wide_s = build_wide_totals(rdf, "SKU", "Sales", use_periods, avg_n)
-            st.dataframe(wide_s, use_container_width=True, height=520)
+            wide_s = reorder_skus_for_retailer(wide_s, sel_r, sku_order_map)
+            st.dataframe(style_currency_table(wide_s, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
             st.download_button("Download sales (CSV)", wide_s.to_csv(index=False).encode("utf-8"), f"{sel_r}_sku_sales.csv", "text/csv")
 
 with tab_vendor_scorecard:
@@ -639,12 +706,18 @@ with tab_retail_totals:
 
         st.markdown("#### Sales ($) by Retailer")
         wide_sales = build_wide_totals(df, "Retailer", "Sales", use_periods, avg_n)
-        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=520)
+        if not wide_sales.empty:
+            wide_sales = wide_sales.sort_values("Retailer", ascending=True)
+            wide_sales = add_total_row(wide_sales, "Retailer")
+        st.dataframe(style_currency_table(wide_sales, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
         st.download_button("Download sales table (CSV)", wide_sales.to_csv(index=False).encode("utf-8"), "retailer_sales_by_week.csv", "text/csv")
 
         st.markdown("#### Units by Retailer")
         wide_units = build_wide_totals(df, "Retailer", "Units", use_periods, avg_n)
-        st.dataframe(style_number_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=520)
+        if not wide_units.empty:
+            wide_units = wide_units.sort_values("Retailer", ascending=True)
+            wide_units = add_total_row(wide_units, "Retailer")
+        st.dataframe(style_number_table(wide_units, diff_like_cols=['Diff']), use_container_width=True, height=520, hide_index=True)
         st.download_button("Download units table (CSV)", wide_units.to_csv(index=False).encode("utf-8"), "retailer_units_by_week.csv", "text/csv")
 
 with tab_retail_scorecard:
@@ -704,8 +777,8 @@ with tab_retail_scorecard:
 
 with tab_skus:
     st.markdown("### SKU Table (filtered)")
-    sku_tbl = agg_sku(df) if not df.empty else pd.DataFrame()
-    st.dataframe(sku_tbl, use_container_width=True, height=600)
+    sku_tbl = agg_sku(df, sku_order_map=sku_order_map) if not df.empty else pd.DataFrame()
+    st.dataframe(sku_tbl, use_container_width=True, height=600, hide_index=True)
     st.download_button("Download CSV", sku_tbl.to_csv(index=False).encode("utf-8"), "sku_table.csv", "text/csv")
 
 with tab_unmapped:
@@ -714,8 +787,9 @@ with tab_unmapped:
         st.info("No data yet.")
     else:
         um = enriched[enriched["Vendor"].isna() | enriched["Price"].isna()].copy()
-        um = um.sort_values(["Retailer","SKU"])
-        st.dataframe(um, use_container_width=True, height=600)
+        um["_sku_rank"] = um.apply(lambda r: {s:i for i,s in enumerate(sku_order_map.get(r["Retailer"], []))}.get(r["SKU"], 10**9), axis=1)
+        um = um.sort_values(["Retailer","_sku_rank","SKU"]).drop(columns=["_sku_rank"])
+        st.dataframe(um, use_container_width=True, height=600, hide_index=True)
         st.download_button("Download CSV", um.to_csv(index=False).encode("utf-8"), "unmapped_rows.csv", "text/csv")
 
 with tab_backup:
