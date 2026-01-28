@@ -229,6 +229,127 @@ def agg_sku(df: pd.DataFrame) -> pd.DataFrame:
 # -------------------------
 # UI
 # -------------------------
+def _sorted_periods(df: pd.DataFrame):
+    if df is None or df.empty or "StartDate" not in df.columns:
+        return []
+    p = pd.to_datetime(df["StartDate"], errors="coerce")
+    p = p.dropna().dt.date.unique().tolist()
+    return sorted(p)
+
+def _format_period(d: date) -> str:
+    if d is None or pd.isna(d):
+        return ""
+    # show M/D for readability; include year if it changes
+    try:
+        return pd.to_datetime(d).strftime("%-m/%-d")
+    except Exception:
+        return str(d)
+
+def build_wide_totals(df: pd.DataFrame, index_col: str, value_col: str, periods: list[date], avg_weeks: int):
+    """Return a wide table: index_col + period columns + Diff + Avg."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    tmp = df.copy()
+    tmp["StartDate"] = pd.to_datetime(tmp["StartDate"], errors="coerce").dt.date
+    wide = tmp.pivot_table(index=index_col, columns="StartDate", values=value_col, aggfunc="sum", fill_value=0.0)
+
+    # Keep requested periods (already sorted)
+    cols = [p for p in periods if p in wide.columns]
+    wide = wide[cols] if cols else wide.iloc[:, 0:0]
+
+    # Add Diff (last - prev)
+    if wide.shape[1] >= 2:
+        diff = wide.iloc[:, -1] - wide.iloc[:, -2]
+    elif wide.shape[1] == 1:
+        diff = wide.iloc[:, -1]
+    else:
+        diff = 0.0
+    wide["Diff"] = diff
+
+    # Add Avg over last avg_weeks columns
+    if wide.shape[1] > 0:
+        base_cols = [c for c in wide.columns if c != "Diff"]
+        use_cols = base_cols[-min(len(base_cols), max(1, avg_weeks)):]
+        wide["Avg"] = wide[use_cols].mean(axis=1)
+    else:
+        wide["Avg"] = 0.0
+
+    # Rename period columns to friendly labels
+    rename = {c: _format_period(c) for c in wide.columns if isinstance(c, date)}
+    wide = wide.rename(columns=rename)
+
+    wide = wide.reset_index()
+
+    # Sort by latest period value if exists
+    period_labels = [ _format_period(p) for p in cols ]
+    if period_labels:
+        wide = wide.sort_values(period_labels[-1], ascending=False)
+    return wide
+
+def month_table(df: pd.DataFrame, group_col: str):
+    """Month totals for a filtered df: month, units, sales"""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Month","Units","Sales"])
+    d = df.copy()
+    d["Month"] = pd.to_datetime(d["StartDate"], errors="coerce").dt.to_period("M").astype(str)
+    g = d.groupby("Month", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
+    g["Sales"] = g["Sales"].fillna(0.0)
+    # sort chronologically
+    g["_m"] = pd.to_datetime(g["Month"] + "-01", errors="coerce")
+    g = g.sort_values("_m").drop(columns=["_m"])
+    return g
+
+def wow_mom_metrics(df: pd.DataFrame):
+    """Return dict with YTD units/sales and WoW/MoM deltas."""
+    out = {"ytd_units":0.0,"ytd_sales":0.0,"wow_units":None,"wow_sales":None,"mom_units":None,"mom_sales":None}
+    if df is None or df.empty:
+        return out
+
+    d = df.copy()
+    d["StartDate"] = pd.to_datetime(d["StartDate"], errors="coerce")
+    out["ytd_units"] = float(d["Units"].sum())
+    out["ytd_sales"] = float(d["Sales"].fillna(0).sum())
+
+    # WoW: last two periods
+    periods = sorted(d["StartDate"].dropna().dt.date.unique().tolist())
+    if len(periods) >= 1:
+        cur_p = periods[-1]
+        cur = d[d["StartDate"].dt.date == cur_p]
+        cur_u = cur["Units"].sum()
+        cur_s = cur["Sales"].fillna(0).sum()
+        if len(periods) >= 2:
+            prev_p = periods[-2]
+            prev = d[d["StartDate"].dt.date == prev_p]
+            prev_u = prev["Units"].sum()
+            prev_s = prev["Sales"].fillna(0).sum()
+        else:
+            prev_u = 0.0
+            prev_s = 0.0
+        out["wow_units"] = float(cur_u - prev_u)
+        out["wow_sales"] = float(cur_s - prev_s)
+
+    # MoM: last month vs previous month
+    d["Month"] = d["StartDate"].dt.to_period("M")
+    months = sorted(d["Month"].dropna().unique().tolist())
+    if len(months) >= 1:
+        cur_m = months[-1]
+        cur = d[d["Month"] == cur_m]
+        cur_u = cur["Units"].sum()
+        cur_s = cur["Sales"].fillna(0).sum()
+        if len(months) >= 2:
+            prev_m = months[-2]
+            prev = d[d["Month"] == prev_m]
+            prev_u = prev["Units"].sum()
+            prev_s = prev["Sales"].fillna(0).sum()
+        else:
+            prev_u = 0.0
+            prev_s = 0.0
+        out["mom_units"] = float(cur_u - prev_u)
+        out["mom_sales"] = float(cur_s - prev_s)
+
+    return out
+
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 
@@ -332,138 +453,191 @@ else:
     cur_month_df = df.iloc[0:0].copy()
     prev_month_df = df.iloc[0:0].copy()
 
-tab_summary, tab_vendor_totals, tab_vendor_scorecard, tab_retail_totals, tab_retail_scorecard, tab_skus, tab_unmapped, tab_backup = st.tabs(
-    ["Summary", "Vendor Totals", "Vendor Scorecard", "Retailer Totals", "Retailer Scorecard", "SKUs", "Unmapped SKUs", "Backup / Exports"]
+tab_retail_totals, tab_vendor_totals, tab_unit_summary, tab_retail_scorecard, tab_vendor_scorecard, tab_skus, tab_unmapped, tab_backup = st.tabs(
+    ["Retailer Totals", "Vendor Totals", "Unit Summary", "Retailer Scorecard", "Vendor Scorecard", "SKUs", "Unmapped SKUs", "Backup / Exports"]
 )
 
-with tab_summary:
-    c1, c2, c3, c4 = st.columns(4)
-    total_units = float(df["Units"].sum()) if not df.empty else 0.0
-    total_sales = float(df["Sales"].fillna(0).sum()) if not df.empty else 0.0
-    c1.metric("Total Units (filtered)", f"{total_units:,.0f}")
-    c2.metric("Total Sales (filtered)", f"${total_sales:,.2f}")
-    c3.metric("Rows", f"{len(df):,}")
-    c4.metric("Distinct SKUs", f"{df['SKU'].nunique() if not df.empty else 0:,}")
-
-    st.markdown("### Latest Period (WoW)")
-    if cur_period.empty or not cur_period["EndDate"].notna().any():
-        st.info("No dated uploads detected yet.")
-    else:
-        cur_u = cur_period["Units"].sum()
-        cur_s = cur_period["Sales"].fillna(0).sum()
-        prev_u = prev_period["Units"].sum() if not prev_period.empty else 0
-        prev_s = prev_period["Sales"].fillna(0).sum() if not prev_period.empty else 0
-        st.write(f"Period end date: **{cur_period['EndDate'].dropna().max()}** (length: {days} day(s))")
-        m1, m2 = st.columns(2)
-        m1.metric("Units (latest period)", f"{cur_u:,.0f}", f"{(cur_u-prev_u):,.0f}")
-        m2.metric("Sales (latest period)", f"${cur_s:,.2f}", f"${(cur_s-prev_s):,.2f}")
-
-    st.markdown("### Latest Month (MoM)")
-    if cur_month_df.empty:
-        st.info("No monthly rollups yet (requires EndDate in uploads).")
-    else:
-        cm_u = cur_month_df["Units"].sum()
-        cm_s = cur_month_df["Sales"].fillna(0).sum()
-        pm_u = prev_month_df["Units"].sum() if not prev_month_df.empty else 0
-        pm_s = prev_month_df["Sales"].fillna(0).sum() if not prev_month_df.empty else 0
-        st.write(f"Month: **{sorted(df_m['Month'].dropna().unique())[-1]}**")
-        m1, m2 = st.columns(2)
-        m1.metric("Units (latest month)", f"{cm_u:,.0f}", f"{(cm_u-pm_u):,.0f}")
-        m2.metric("Sales (latest month)", f"${cm_s:,.2f}", f"${(cm_s-pm_s):,.2f}")
-
 with tab_vendor_totals:
-    st.markdown("### Vendor Totals (filtered)")
-    vtot = agg_vendor(df) if not df.empty else pd.DataFrame(columns=["Vendor","Units","Sales"])
-    st.dataframe(vtot, use_container_width=True, height=520)
-    st.download_button("Download CSV", vtot.to_csv(index=False).encode("utf-8"), "vendor_totals.csv", "text/csv")
+    st.markdown("### Vendor Totals (by week)")
+
+    tf = st.selectbox("Timeframe (weeks)", options=[2,4,8,12], index=2, key="vendor_totals_tf")
+    avg_n = st.selectbox("Average over last (weeks)", options=[4,8,12], index=0, key="vendor_totals_avg")
+
+    if df.empty or df["Vendor"].dropna().empty:
+        st.info("No data available yet. Upload weekly sheets to populate totals.")
+    else:
+        periods = _sorted_periods(df)
+        use_periods = periods[-min(len(periods), tf):]
+
+        st.markdown("#### Sales ($) by Vendor")
+        wide_sales = build_wide_totals(df, "Vendor", "Sales", use_periods, avg_n)
+        st.dataframe(wide_sales, use_container_width=True, height=520)
+        st.download_button("Download sales table (CSV)", wide_sales.to_csv(index=False).encode("utf-8"), "vendor_sales_by_week.csv", "text/csv")
+
+        st.markdown("#### Units by Vendor")
+        wide_units = build_wide_totals(df, "Vendor", "Units", use_periods, avg_n)
+        st.dataframe(wide_units, use_container_width=True, height=520)
+        st.download_button("Download units table (CSV)", wide_units.to_csv(index=False).encode("utf-8"), "vendor_units_by_week.csv", "text/csv")
+
+with tab_unit_summary:
+    st.markdown("### Unit Summary (SKU-level by Retailer)")
+
+    if df.empty:
+        st.info("Upload weekly sheets to see SKU-level summaries.")
+    else:
+        retailers = sorted([r for r in df["Retailer"].dropna().unique().tolist() if str(r).strip() != ""])
+        sel_r = st.selectbox("Retailer", options=retailers, index=0 if retailers else None, key="unit_sum_retailer")
+        tf = st.selectbox("Timeframe (weeks)", options=[2,4,8,12], index=2, key="unit_sum_tf")
+        avg_n = st.selectbox("Average over last (weeks)", options=[4,8,12], index=0, key="unit_sum_avg")
+
+        if not sel_r:
+            st.info("Select a retailer.")
+        else:
+            rdf = df[df["Retailer"] == sel_r].copy()
+            periods = _sorted_periods(rdf)
+            use_periods = periods[-min(len(periods), tf):]
+
+            st.markdown("#### Units by SKU (weekly)")
+            wide_u = build_wide_totals(rdf, "SKU", "Units", use_periods, avg_n)
+            st.dataframe(wide_u, use_container_width=True, height=520)
+            st.download_button("Download units (CSV)", wide_u.to_csv(index=False).encode("utf-8"), f"{sel_r}_sku_units.csv", "text/csv")
+
+            st.markdown("#### Sales ($) by SKU (weekly)")
+            wide_s = build_wide_totals(rdf, "SKU", "Sales", use_periods, avg_n)
+            st.dataframe(wide_s, use_container_width=True, height=520)
+            st.download_button("Download sales (CSV)", wide_s.to_csv(index=False).encode("utf-8"), f"{sel_r}_sku_sales.csv", "text/csv")
 
 with tab_vendor_scorecard:
     st.markdown("### Vendor Scorecard")
-    vendors = sorted(df["Vendor"].dropna().unique()) if not df.empty else []
-    sel_vendor = st.selectbox("Select Vendor", options=vendors, index=0 if vendors else None)
-    if not sel_vendor:
-        st.info("Select a vendor.")
+
+    if df.empty:
+        st.info("Upload weekly sheets to see scorecards.")
     else:
-        vdf = df[df["Vendor"] == sel_vendor].copy()
-        st.markdown("#### KPIs")
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("YTD Units", f"{vdf['Units'].sum():,.0f}")
-        k2.metric("YTD Sales", f"${vdf['Sales'].fillna(0).sum():,.2f}")
+        vendors = sorted([v for v in df["Vendor"].dropna().unique().tolist() if str(v).strip() != ""])
+        sel_vendor = st.selectbox("Vendor", options=vendors, index=0 if vendors else None, key="vendor_score_vendor")
 
-        v_cur = latest_period(vdf)
-        v_days = period_len_days(v_cur)
-        v_prev = previous_period(vdf, v_days) if v_days else vdf.iloc[0:0].copy()
-        if not v_cur.empty and v_cur["EndDate"].notna().any():
-            vu = v_cur["Units"].sum()
-            vs = v_cur["Sales"].fillna(0).sum()
-            pu = v_prev["Units"].sum() if not v_prev.empty else 0
-            ps = v_prev["Sales"].fillna(0).sum() if not v_prev.empty else 0
-            k3.metric("WoW Units", f"{vu:,.0f}", f"{(vu-pu):,.0f}")
-            k4.metric("WoW Sales", f"${vs:,.2f}", f"${(vs-ps):,.2f}")
+        if not sel_vendor:
+            st.info("Select a vendor.")
         else:
-            k3.metric("WoW Units", "—")
-            k4.metric("WoW Sales", "—")
+            vdf = df[df["Vendor"] == sel_vendor].copy()
 
-        st.markdown("#### Monthly (MoM)")
-        vdf_m = add_month(vdf)
-        if vdf_m.empty or not vdf_m["Month"].notna().any():
-            st.info("No monthly rollups yet (requires EndDate).")
-        else:
-            months = sorted(vdf_m["Month"].dropna().unique())
-            cur_m = months[-1]
-            prev_m = (pd.Period(cur_m) - 1).strftime("%Y-%m")
-            curm = vdf_m[vdf_m["Month"] == cur_m]
-            prevm = vdf_m[vdf_m["Month"] == prev_m]
-            mu = curm["Units"].sum()
-            ms = curm["Sales"].fillna(0).sum()
-            pu = prevm["Units"].sum() if not prevm.empty else 0
-            ps = prevm["Sales"].fillna(0).sum() if not prevm.empty else 0
-            mm1, mm2 = st.columns(2)
-            mm1.metric(f"Units ({cur_m})", f"{mu:,.0f}", f"{(mu-pu):,.0f}")
-            mm2.metric(f"Sales ({cur_m})", f"${ms:,.2f}", f"${(ms-ps):,.2f}")
+            m = wow_mom_metrics(vdf)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("YTD Units", f"{m['ytd_units']:,.0f}", f"{m['wow_units']:+,.0f}" if m["wow_units"] is not None else None)
+            c2.metric("YTD Sales", f"${m['ytd_sales']:,.2f}", f"${m['wow_sales']:+,.2f}" if m["wow_sales"] is not None else None)
+            c3.metric("MoM Units", "" if m["mom_units"] is None else f"{m['mom_units']:+,.0f}")
+            c4.metric("MoM Sales", "" if m["mom_sales"] is None else f"${m['mom_sales']:+,.2f}")
 
-        st.markdown("#### Top SKUs (by Units)")
-        sku = agg_sku(vdf)
-        st.dataframe(sku.head(50), use_container_width=True, height=520)
+            st.markdown("#### Monthly totals")
+            months_n = st.selectbox("Months to show", options=[3,6,12], index=1, key="vendor_score_months")
+            mt = month_table(vdf, "Vendor")
+            if mt.empty:
+                st.info("No month data yet.")
+            else:
+                mt_show = mt.tail(min(len(mt), months_n)).copy()
+                st.dataframe(mt_show, use_container_width=True, height=320)
+
+            sku_agg = vdf.groupby("SKU", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
+            sku_agg["Sales"] = sku_agg["Sales"].fillna(0.0)
+
+            st.markdown("#### Top SKUs")
+            t1, t2 = st.columns(2)
+            with t1:
+                st.markdown("**Top by Units**")
+                top_u = sku_agg.sort_values("Units", ascending=False).head(10)
+                st.dataframe(top_u, use_container_width=True, height=360)
+            with t2:
+                st.markdown("**Top by Sales**")
+                top_s = sku_agg.sort_values("Sales", ascending=False).head(10)
+                st.dataframe(top_s, use_container_width=True, height=360)
+
+            st.markdown("#### Bottom 10 SKUs")
+            b1, b2 = st.columns(2)
+            with b1:
+                st.markdown("**Bottom by Units**")
+                bot_u = sku_agg.sort_values("Units", ascending=True).head(10)
+                st.dataframe(bot_u, use_container_width=True, height=360)
+            with b2:
+                st.markdown("**Bottom by Sales**")
+                bot_s = sku_agg.sort_values("Sales", ascending=True).head(10)
+                st.dataframe(bot_s, use_container_width=True, height=360)
 
 with tab_retail_totals:
-    st.markdown("### Retailer Totals (filtered)")
-    rtot = agg_retailer(df) if not df.empty else pd.DataFrame(columns=["Retailer","Units","Sales"])
-    st.dataframe(rtot, use_container_width=True, height=520)
-    st.download_button("Download CSV", rtot.to_csv(index=False).encode("utf-8"), "retailer_totals.csv", "text/csv")
+    st.markdown("### Retailer Totals (by week)")
+
+    tf = st.selectbox("Timeframe (weeks)", options=[2,4,8,12], index=2, key="retail_totals_tf")
+    avg_n = st.selectbox("Average over last (weeks)", options=[4,8,12], index=0, key="retail_totals_avg")
+
+    if df.empty or df["Retailer"].dropna().empty:
+        st.info("No data available yet. Upload weekly sheets to populate totals.")
+    else:
+        periods = _sorted_periods(df)
+        use_periods = periods[-min(len(periods), tf):]
+
+        st.markdown("#### Sales ($) by Retailer")
+        wide_sales = build_wide_totals(df, "Retailer", "Sales", use_periods, avg_n)
+        st.dataframe(wide_sales, use_container_width=True, height=520)
+        st.download_button("Download sales table (CSV)", wide_sales.to_csv(index=False).encode("utf-8"), "retailer_sales_by_week.csv", "text/csv")
+
+        st.markdown("#### Units by Retailer")
+        wide_units = build_wide_totals(df, "Retailer", "Units", use_periods, avg_n)
+        st.dataframe(wide_units, use_container_width=True, height=520)
+        st.download_button("Download units table (CSV)", wide_units.to_csv(index=False).encode("utf-8"), "retailer_units_by_week.csv", "text/csv")
 
 with tab_retail_scorecard:
     st.markdown("### Retailer Scorecard")
-    retailers = sorted(df["Retailer"].dropna().unique()) if not df.empty else []
-    sel_r = st.selectbox("Select Retailer", options=retailers, index=0 if retailers else None, key="sel_retail")
-    if not sel_r:
-        st.info("Select a retailer.")
+
+    if df.empty:
+        st.info("Upload weekly sheets to see scorecards.")
     else:
-        rdf = df[df["Retailer"] == sel_r].copy()
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("YTD Units", f"{rdf['Units'].sum():,.0f}")
-        k2.metric("YTD Sales", f"${rdf['Sales'].fillna(0).sum():,.2f}")
+        retailers = sorted([r for r in df["Retailer"].dropna().unique().tolist() if str(r).strip() != ""])
+        sel_r = st.selectbox("Retailer", options=retailers, index=0 if retailers else None, key="retail_score_retailer")
 
-        r_cur = latest_period(rdf)
-        r_days = period_len_days(r_cur)
-        r_prev = previous_period(rdf, r_days) if r_days else rdf.iloc[0:0].copy()
-        if not r_cur.empty and r_cur["EndDate"].notna().any():
-            ru = r_cur["Units"].sum()
-            rs = r_cur["Sales"].fillna(0).sum()
-            pu = r_prev["Units"].sum() if not r_prev.empty else 0
-            ps = r_prev["Sales"].fillna(0).sum() if not r_prev.empty else 0
-            k3.metric("WoW Units", f"{ru:,.0f}", f"{(ru-pu):,.0f}")
-            k4.metric("WoW Sales", f"${rs:,.2f}", f"${(rs-ps):,.2f}")
+        if not sel_r:
+            st.info("Select a retailer.")
         else:
-            k3.metric("WoW Units", "—")
-            k4.metric("WoW Sales", "—")
+            rdf = df[df["Retailer"] == sel_r].copy()
 
-        st.markdown("#### Top Vendors (by Sales)")
-        topv = rdf.groupby("Vendor", as_index=False).agg(
-            Units=("Units","sum"),
-            Sales=("Sales", lambda x: x.fillna(0).sum())
-        ).sort_values("Sales", ascending=False)
-        st.dataframe(topv.head(50), use_container_width=True, height=520)
+            m = wow_mom_metrics(rdf)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("YTD Units", f"{m['ytd_units']:,.0f}", f"{m['wow_units']:+,.0f}" if m["wow_units"] is not None else None)
+            c2.metric("YTD Sales", f"${m['ytd_sales']:,.2f}", f"${m['wow_sales']:+,.2f}" if m["wow_sales"] is not None else None)
+            c3.metric("MoM Units", "" if m["mom_units"] is None else f"{m['mom_units']:+,.0f}")
+            c4.metric("MoM Sales", "" if m["mom_sales"] is None else f"${m['mom_sales']:+,.2f}")
+
+            st.markdown("#### Monthly totals")
+            months_n = st.selectbox("Months to show", options=[3,6,12], index=1, key="retail_score_months")
+            mt = month_table(rdf, "Retailer")
+            if mt.empty:
+                st.info("No month data yet.")
+            else:
+                mt_show = mt.tail(min(len(mt), months_n)).copy()
+                st.dataframe(mt_show, use_container_width=True, height=320)
+
+            sku_agg = rdf.groupby("SKU", as_index=False).agg(Units=("Units","sum"), Sales=("Sales","sum"))
+            sku_agg["Sales"] = sku_agg["Sales"].fillna(0.0)
+
+            st.markdown("#### Top SKUs")
+            t1, t2 = st.columns(2)
+            with t1:
+                st.markdown("**Top by Units**")
+                top_u = sku_agg.sort_values("Units", ascending=False).head(10)
+                st.dataframe(top_u, use_container_width=True, height=360)
+            with t2:
+                st.markdown("**Top by Sales**")
+                top_s = sku_agg.sort_values("Sales", ascending=False).head(10)
+                st.dataframe(top_s, use_container_width=True, height=360)
+
+            st.markdown("#### Bottom 10 SKUs")
+            b1, b2 = st.columns(2)
+            with b1:
+                st.markdown("**Bottom by Units**")
+                bot_u = sku_agg.sort_values("Units", ascending=True).head(10)
+                st.dataframe(bot_u, use_container_width=True, height=360)
+            with b2:
+                st.markdown("**Bottom by Sales**")
+                bot_s = sku_agg.sort_values("Sales", ascending=True).head(10)
+                st.dataframe(bot_s, use_container_width=True, height=360)
 
 with tab_skus:
     st.markdown("### SKU Table (filtered)")
