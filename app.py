@@ -170,6 +170,17 @@ def load_sales_store() -> pd.DataFrame:
             return pd.DataFrame()
     return pd.DataFrame()
 
+
+def append_sales_to_store(new_rows: pd.DataFrame) -> None:
+    """Load existing sales store, upsert new rows, and persist to disk."""
+    if new_rows is None or new_rows.empty:
+        return
+    existing = load_sales_store()
+    combined = upsert_sales(existing, new_rows)
+    # Persist as CSV (dates saved as ISO strings)
+    combined.to_csv(DEFAULT_SALES_STORE, index=False)
+
+
 def save_sales_store(df: pd.DataFrame) -> None:
     if df is None or df.empty:
         return
@@ -582,7 +593,7 @@ with st.sidebar:
     if st.button("Ingest uploads", disabled=not wk_uploads):
         for f in wk_uploads:
             new_rows = read_weekly_workbook(f, year=year)
-            upsert_sales(new_rows)
+            append_sales_to_store(new_rows)
         st.success("Ingested uploads into the sales store.")
         st.rerun()
 
