@@ -279,6 +279,19 @@ def _diff_color(val):
         return "color: red;"
     return ""
 
+def _table_height(df, row_height: int = 32, header_height: int = 38, min_height: int = 160, max_height: int = 900) -> int:
+    """Return a reasonable Streamlit dataframe height so tables show many rows without internal scrolling."""
+    try:
+        n = int(len(df)) if df is not None else 0
+    except Exception:
+        n = 0
+    h = header_height + row_height * (n + 1)
+    if h < min_height:
+        h = min_height
+    if h > max_height:
+        h = max_height
+    return int(h)
+
 def style_currency_table(df: pd.DataFrame, diff_like_cols=None):
     """Currency formatting: $1,234.56 and red/green for diff-like cols."""
     if df is None or df.empty:
