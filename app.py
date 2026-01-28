@@ -16,6 +16,39 @@ DEFAULT_SALES_STORE = DATA_DIR / "sales_store.csv"
 # -------------------------
 # Helpers
 # -------------------------
+
+def fmt_currency(x):
+    """Format number as currency like $1,234.56 and negatives as ($1,234.56)."""
+    if x is None or (isinstance(x, float) and np.isnan(x)) or (isinstance(x, (pd.Series, pd.DataFrame))):
+        # avoid accidental misuse; Series/DataFrame should be formatted via styling
+        return "" if x is None else x
+    try:
+        v = float(x)
+    except Exception:
+        return ""
+    s = f"${abs(v):,.2f}"
+    return f"({s})" if v < 0 else s
+
+def fmt_int(x):
+    """Format as integer with commas (no decimals)."""
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return ""
+    try:
+        v = float(x)
+    except Exception:
+        return ""
+    return f"{int(round(v)):,.0f}"
+
+def fmt_2(x):
+    """Format as number with 2 decimals and commas."""
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return ""
+    try:
+        v = float(x)
+    except Exception:
+        return ""
+    return f"{v:,.2f}"
+
 def _normalize_retailer(x: str) -> str:
     if x is None:
         return ""
