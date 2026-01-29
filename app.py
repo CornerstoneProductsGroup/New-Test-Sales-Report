@@ -431,8 +431,8 @@ def make_totals_tables(base: pd.DataFrame, group_col: str, tf_weeks: int, avg_we
         units_p["Diff"] = 0.0
 
     avg_use = use[-avg_weeks:] if len(use) >= avg_weeks else use
-    sales_p["Avg"] = sales_p[avg_use].mean(axis=1) if avg_use else 0.0
-    units_p["Avg"] = units_p[avg_use].mean(axis=1) if avg_use else 0.0
+    sales_p["Avg"] = sales_p[avg_use].replace(0, np.nan).mean(axis=1) if avg_use else 0.0
+    units_p["Avg"] = units_p[avg_use].replace(0, np.nan).mean(axis=1) if avg_use else 0.0
 
     sales_p = sales_p.sort_index()
     units_p = units_p.sort_index()
@@ -553,7 +553,7 @@ with tab_unit_summary:
             else:
                 units_p["Diff"] = 0.0
             avg_use = use[-avgw:] if len(use) >= avgw else use
-            units_p["Avg"] = units_p[avg_use].mean(axis=1) if avg_use else 0.0
+            units_p["Avg"] = units_p[avg_use].replace(0, np.nan).mean(axis=1) if avg_use else 0.0
 
             units_p = units_p.rename(columns={c: pd.Timestamp(c).strftime("%m-%d") for c in use})
             units_out = units_p.reset_index()
@@ -593,7 +593,7 @@ with tab_unit_summary:
             else:
                 sales_p["Diff"] = 0.0
             avg_use = use[-avgw:] if len(use) >= avgw else use
-            sales_p["Avg"] = sales_p[avg_use].mean(axis=1) if avg_use else 0.0
+            sales_p["Avg"] = sales_p[avg_use].replace(0, np.nan).mean(axis=1) if avg_use else 0.0
 
             sales_p = sales_p.rename(columns={c: pd.Timestamp(c).strftime("%m-%d") for c in use})
             sales_out = sales_p.reset_index()
