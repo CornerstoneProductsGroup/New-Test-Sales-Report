@@ -565,6 +565,8 @@ st.title(APP_TITLE)
 with st.sidebar:
     st.header("Data Inputs")
 
+    edit_mode = st.checkbox("Enable Edit Mode (edit Vendor/Price)", value=False)
+
     this_year = date.today().year
     year = st.selectbox(
         "Year (for filename date parsing)",
@@ -701,7 +703,6 @@ st.divider()
 
 unmapped_ct = int((enriched["Vendor"].isna() | enriched["Price"].isna()).sum()) if not enriched.empty else 0
 if unmapped_ct:
-    st.warning(f"{unmapped_ct:,} row(s) are missing Vendor and/or Price after mapping. Use the 'Unmapped SKUs' tab to review.")
 
 cur_period = latest_period(df)
 days = period_len_days(cur_period)
